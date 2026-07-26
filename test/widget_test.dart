@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:oppo_background_gps_demo/features/chat/models/chat_configuration.dart';
+import 'package:oppo_background_gps_demo/features/chat/models/chat_conversation.dart';
+import 'package:oppo_background_gps_demo/features/chat/models/chat_user.dart';
 import 'package:oppo_background_gps_demo/features/map/controllers/tracking_map_controller.dart';
 import 'package:oppo_background_gps_demo/features/map/models/map_display_state.dart';
 import 'package:oppo_background_gps_demo/features/map/services/tracking_map_adapter.dart';
@@ -10,16 +13,36 @@ import 'package:oppo_background_gps_demo/features/tracking/screens/tracking_scre
 import 'package:oppo_background_gps_demo/features/tracking/services/tracking_models.dart';
 import 'package:oppo_background_gps_demo/features/tracking/services/tracking_service.dart';
 
+import 'features/chat/fake_chat_service.dart';
+
 void main() {
   testWidgets('tracking screen starts native service and displays an event', (
     tester,
   ) async {
     final service = _WidgetFakeTrackingService();
+    final localChat = FakeChatService(
+      providerType: ChatProviderType.localDemo,
+      conversations: const [
+        ChatConversation(
+          id: 'local_dispatch',
+          participant: ChatUser(
+            userId: 'dispatch',
+            displayName: 'Dispatch Coordinator',
+          ),
+          providerType: ChatProviderType.localDemo,
+        ),
+      ],
+    );
     await tester.pumpWidget(
       MaterialApp(
         home: TrackingScreen(
           trackingService: service,
           trackingMapAdapter: const _WidgetFakeMapAdapter(),
+          localChatService: localChat,
+          tencentChatService: FakeChatService(
+            providerType: ChatProviderType.tencentCloud,
+            isConfigured: false,
+          ),
         ),
       ),
     );
@@ -28,6 +51,31 @@ void main() {
     expect(find.text('Map Track Demo'), findsOneWidget);
     expect(find.text('Stopped'), findsOneWidget);
     expect(find.text('5000 ms'), findsOneWidget);
+    expect(find.text('Live'), findsOneWidget);
+    expect(find.text('Sessions'), findsOneWidget);
+    expect(find.text('Chat'), findsOneWidget);
+    expect(find.text('Diagnostics'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+
+    await tester.tap(find.text('Chat'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Local UI Demo — Not connected to Tencent Cloud'),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(TextButton, 'Stop'), findsNothing);
+    await tester.tap(find.text('Dispatch Coordinator'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Share current tracking status'));
+    await tester.pump();
+    expect(find.text('No location sample is available yet.'), findsOneWidget);
+    expect(service.startCalls, 0);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Live'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextButton, 'Stop'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Start Tracking'));
     await tester.pumpAndSettle();
@@ -90,6 +138,7 @@ class _WidgetFakeMapAdapter implements TrackingMapAdapter {
 class _WidgetFakeTrackingService implements TrackingService {
   final StreamController<TrackingEvent> _events =
       StreamController<TrackingEvent>.broadcast();
+  int startCalls = 0;
 
   @override
   Future<TrackingPermissionStatus> ensurePermissions() async =>
@@ -102,13 +151,15 @@ class _WidgetFakeTrackingService implements TrackingService {
       );
 
   @override
-  Future<TrackingStartResult> startTracking() async =>
-      const TrackingStartResult(
-        success: true,
-        isTracking: true,
-        sessionId: 'session-1',
-        message: 'Tracking started',
-      );
+  Future<TrackingStartResult> startTracking() async {
+    startCalls += 1;
+    return const TrackingStartResult(
+      success: true,
+      isTracking: true,
+      sessionId: 'session-1',
+      message: 'Tracking started',
+    );
+  }
 
   @override
   Future<void> stopTracking() async {}

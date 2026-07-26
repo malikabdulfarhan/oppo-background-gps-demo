@@ -2,6 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../chat/controllers/chat_controller.dart';
+import '../../chat/models/chat_configuration.dart';
+import '../../chat/screens/chat_home_screen.dart';
+import '../../chat/services/chat_service.dart';
 import '../../map/models/map_display_state.dart';
 import '../../map/services/tracking_map_adapter.dart';
 import '../controllers/tracking_controller.dart';
@@ -18,12 +22,18 @@ class TrackingScreen extends StatefulWidget {
     this.trackingService,
     this.mapBuilder,
     this.trackingMapAdapter,
+    this.chatConfiguration = const ChatConfiguration(),
+    this.localChatService,
+    this.tencentChatService,
     super.key,
   });
 
   final TrackingService? trackingService;
   final Widget Function(MapDisplayState state)? mapBuilder;
   final TrackingMapAdapter? trackingMapAdapter;
+  final ChatConfiguration chatConfiguration;
+  final ChatService? localChatService;
+  final ChatService? tencentChatService;
 
   @override
   State<TrackingScreen> createState() => _TrackingScreenState();
@@ -32,6 +42,7 @@ class TrackingScreen extends StatefulWidget {
 class _TrackingScreenState extends State<TrackingScreen>
     with WidgetsBindingObserver {
   late final TrackingController _controller;
+  late final ChatController _chatController;
   int _selectedIndex = 0;
   int _sessionsRefreshToken = 0;
   bool _consentPromptOpen = false;
@@ -41,6 +52,11 @@ class _TrackingScreenState extends State<TrackingScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controller = TrackingController(trackingService: widget.trackingService);
+    _chatController = ChatController(
+      configuration: widget.chatConfiguration,
+      localService: widget.localChatService,
+      tencentService: widget.tencentChatService,
+    );
     unawaited(_initialize());
   }
 
@@ -48,6 +64,7 @@ class _TrackingScreenState extends State<TrackingScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
+    _chatController.dispose();
     super.dispose();
   }
 
@@ -56,13 +73,14 @@ class _TrackingScreenState extends State<TrackingScreen>
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       unawaited(_controller.refreshNativeState());
+      unawaited(_chatController.handleAppResumed());
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _controller,
+      animation: Listenable.merge([_controller, _chatController]),
       builder: (context, _) {
         final pages = [
           LiveTrackingView(
@@ -75,7 +93,14 @@ class _TrackingScreenState extends State<TrackingScreen>
             controller: _controller,
             refreshToken: _sessionsRefreshToken,
           ),
-          DiagnosticsScreen(controller: _controller),
+          ChatHomeScreen(
+            controller: _chatController,
+            trackingController: _controller,
+          ),
+          DiagnosticsScreen(
+            controller: _controller,
+            chatController: _chatController,
+          ),
           TrackingSettingsScreen(controller: _controller),
         ];
         return Scaffold(
@@ -107,7 +132,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                   _sessionsRefreshToken += 1;
                 }
               });
-              if (index == 2) {
+              if (index == 3) {
                 unawaited(
                   _controller.refreshNativeState(restoreRecords: false),
                 );
@@ -123,6 +148,11 @@ class _TrackingScreenState extends State<TrackingScreen>
                 icon: Icon(Icons.history_outlined),
                 selectedIcon: Icon(Icons.history),
                 label: 'Sessions',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.chat_bubble_outline),
+                selectedIcon: Icon(Icons.chat_bubble),
+                label: 'Chat',
               ),
               NavigationDestination(
                 icon: Icon(Icons.monitor_heart_outlined),
@@ -142,7 +172,7 @@ class _TrackingScreenState extends State<TrackingScreen>
   }
 
   Future<void> _initialize() async {
-    await _controller.initialize();
+    await Future.wait([_controller.initialize(), _chatController.initialize()]);
     if (mounted &&
         _controller.amapConfiguration.apiKeyConfigured &&
         _controller.amapConfiguration.privacyConsent ==

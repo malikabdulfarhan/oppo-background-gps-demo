@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../chat/controllers/chat_controller.dart';
 import '../controllers/tracking_controller.dart';
 import '../services/tracking_models.dart';
 
 class DiagnosticsScreen extends StatelessWidget {
-  const DiagnosticsScreen({required this.controller, super.key});
+  const DiagnosticsScreen({
+    required this.controller,
+    required this.chatController,
+    super.key,
+  });
 
   final TrackingController controller;
+  final ChatController chatController;
 
   @override
   Widget build(BuildContext context) {
@@ -79,6 +85,38 @@ class DiagnosticsScreen extends StatelessWidget {
       ('Android model', battery.model),
       ('Android version', battery.androidVersion),
       ('ColorOS / build display', battery.buildDisplay),
+      ('Tencent SDK dependency', 'Present'),
+      (
+        'Tencent SDK version',
+        chatController.sdkVersion ?? '9.0.7652+1 package',
+      ),
+      (
+        'Tencent SDKAppID configured',
+        chatController.isTencentConfigured ? 'Yes' : 'No',
+      ),
+      ('Tencent SDK initialized', chatController.sdkInitializationState.label),
+      ('Selected chat provider', chatController.providerType.label),
+      ('Tencent login status', chatController.authenticationState.label),
+      ('Tencent logged-in UserID', chatController.loggedInUserId ?? 'None'),
+      ('Tencent network state', chatController.networkState.label),
+      ('Chat conversation count', '${chatController.conversationCount}'),
+      ('Chat total unread count', '${chatController.totalUnreadCount}'),
+      (
+        'Advanced message listener registered',
+        chatController.advancedListenerRegistered ? 'Yes' : 'No',
+      ),
+      ('UserSig status', chatController.userSigState.label),
+      ('Tencent offline push', 'Not configured'),
+      ('Last chat error code', '${chatController.lastErrorCode ?? 'None'}'),
+      ('Last chat error summary', chatController.lastErrorSummary ?? 'None'),
+      (
+        'Last incoming-message timestamp',
+        chatController.lastIncomingMessageTimestamp
+                ?.toLocal()
+                .toIso8601String() ??
+            'None',
+      ),
+      ('GPS sharing', 'Explicit action only'),
     ];
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
@@ -114,7 +152,24 @@ class DiagnosticsScreen extends StatelessWidget {
                 ),
                 const _DemoStatusRow(
                   label: 'Tencent/NetEase IM',
-                  value: 'Not included in this phase',
+                  value: 'Replaced by Phase 5 Tencent integration',
+                ),
+                const _DemoStatusRow(
+                  label: 'Tencent IM local UI demo',
+                  value: 'Ready',
+                ),
+                const _DemoStatusRow(
+                  label: 'Tencent Cloud Chat SDK',
+                  value:
+                      'Integrated — credentials required for runtime verification',
+                ),
+                const _DemoStatusRow(
+                  label: 'Tencent one-to-one cloud messaging',
+                  value: 'Pending SDKAppID and UserSig verification',
+                ),
+                const _DemoStatusRow(
+                  label: 'Tencent OPPO offline push',
+                  value: 'Not configured',
                 ),
               ],
             ),
@@ -156,7 +211,8 @@ class DiagnosticsScreen extends StatelessWidget {
         const SizedBox(height: 8),
         const Text(
           'The report excludes the AMap key, signing certificates, and '
-          'absolute app-private file paths.',
+          'absolute app-private file paths, UserSig, message contents, '
+          'recipient lists, and SDKSecretKey.',
           textAlign: TextAlign.center,
         ),
       ],

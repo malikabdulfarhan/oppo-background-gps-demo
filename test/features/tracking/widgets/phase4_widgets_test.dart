@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:oppo_background_gps_demo/features/chat/controllers/chat_controller.dart';
 import 'package:oppo_background_gps_demo/features/map/models/map_display_state.dart';
 import 'package:oppo_background_gps_demo/features/map/models/map_point.dart';
 import 'package:oppo_background_gps_demo/features/map/widgets/map_configuration_card.dart';
@@ -86,14 +87,21 @@ void main() {
       );
       expect(amapRadio.enabled, isFalse);
 
+      final chatController = ChatController();
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(body: DiagnosticsScreen(controller: controller)),
+          home: Scaffold(
+            body: DiagnosticsScreen(
+              controller: controller,
+              chatController: chatController,
+            ),
+          ),
         ),
       );
       expect(find.text('Pending API key'), findsOneWidget);
 
       controller.dispose();
+      chatController.dispose();
       await service.close();
     },
   );

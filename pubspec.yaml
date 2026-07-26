@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  path_provider: ^2.1.6
+  tencent_cloud_chat_sdk: ^9.0.7652+1
 
 dev_dependencies:
   flutter_test:

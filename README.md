@@ -5,11 +5,57 @@ keyless Android LocationManager GPS and optional AMap. It includes foreground
 collection, app-private CSV logging, session history, analytics, and route
 replay.
 
+## Phase 5 Tencent Cloud Chat
+
+Phase 5 adds a fifth **Chat** destination without changing ownership of GPS
+tracking. The Kotlin foreground service remains fully independent from chat.
+
+Two provider modes are available:
+
+- **Local Chat Demo Mode** works with no credentials. It includes seeded
+  one-to-one conversations, app-private JSON persistence, local-only text
+  delivery labels, an explicit incoming-message simulator, and local data
+  reset.
+- **Tencent Cloud Chat Mode** uses the official
+  `tencent_cloud_chat_sdk` package for C2C text conversations, history,
+  sending, advanced incoming-message callbacks, unread state, and connection
+  events. It activates only after an explicit login with a configured SDKAppID,
+  User ID, and temporary UserSig.
+
+Configure only the public SDKAppID at build time:
+
+```powershell
+flutter run --dart-define=TENCENT_IM_SDK_APP_ID=1234567890
+```
+
+The number above is a placeholder. Enter the User ID and temporary UserSig at
+runtime. UserSig remains in memory only and is cleared after the login attempt
+or logout. Never put the Tencent SDKSecretKey in this repository or generate a
+production UserSig in the app. The production flow is:
+
+```text
+Mobile app -> authenticated application backend
+           -> backend generates temporary UserSig
+           -> mobile app logs in to Tencent Cloud Chat
+```
+
+Inside a conversation, the user may explicitly share the latest already
+available GPS status after confirming a privacy warning. Chat never starts
+tracking and never sends locations automatically or uploads a CSV session.
+
+Scope is one-to-one text only. Images, files, audio, calls, group chat, and
+Tencent vendor offline push are intentionally excluded. OPPO/ColorOS
+locked-screen and killed-process chat notifications are not configured.
+Cloud verification still requires a real Tencent application and two test
+users. See [Tencent setup](docs/tencent-im-setup.md),
+[Phase 5 demo](docs/phase-5-chat-demo.md), and
+[UserSig security](docs/tencent-usersig-security.md).
+
 ## Phase 4 architecture
 
 ```text
 Flutter Material 3 UI
-  ├─ Live / Sessions / Diagnostics / Settings
+  ├─ Live / Sessions / Chat / Diagnostics / Settings
   ├─ AMap PlatformView or custom fallback route canvas
   └─ MethodChannel + EventChannel
           ↓
@@ -209,8 +255,8 @@ signing data, and absolute app-private paths.
 - Android or ColorOS may restrict or stop background work under memory,
   battery, thermal, force-stop, permission, or vendor policy conditions.
   `START_STICKY` requests recreation; it is not a survival guarantee.
-- No undocumented OPPO/ColorOS intent, boot auto-start, Tencent IM, or NetEase
-  IM is included.
+- No undocumented OPPO/ColorOS intent or boot auto-start is included. Tencent
+  OPPO offline push is deferred to Phase 6.
 - Hardware behavior must be recorded on the target phone; a successful build
   is not proof of locked-screen callback continuity.
 
