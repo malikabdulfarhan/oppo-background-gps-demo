@@ -31,7 +31,7 @@ class LocationLogList extends StatelessWidget {
             ),
             SizedBox(height: 4),
             Text(
-              'Start tracking to generate simulated GPS records.',
+              'Start tracking to record live GPS positions.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Color(0xFF667085), fontSize: 12),
             ),

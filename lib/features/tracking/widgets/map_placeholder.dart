@@ -37,7 +37,7 @@ class MapPlaceholder extends StatelessWidget {
         children: [
           Positioned.fill(
             child: CustomPaint(
-              painter: _FakeMapPainter(
+              painter: _RoutePreviewPainter(
                 routePoints: routePoints,
                 latestLocation: latestLocation,
               ),
@@ -46,7 +46,10 @@ class MapPlaceholder extends StatelessWidget {
           Positioned(
             left: 12,
             top: 12,
-            child: _MapLabel(icon: Icons.layers_outlined, label: 'FAKE MAP'),
+            child: _MapLabel(
+              icon: Icons.route_outlined,
+              label: 'ROUTE PREVIEW',
+            ),
           ),
           Positioned(
             right: 12,
@@ -79,7 +82,7 @@ class MapPlaceholder extends StatelessWidget {
                   Expanded(
                     child: Text(
                       latestLocation == null
-                          ? 'Waiting for the first simulated sample'
+                          ? 'Waiting for the first GPS sample'
                           : '${latestLocation!.latitude.toStringAsFixed(6)}, '
                                 '${latestLocation!.longitude.toStringAsFixed(6)}',
                       maxLines: 1,
@@ -143,8 +146,8 @@ class _MapLabel extends StatelessWidget {
   }
 }
 
-class _FakeMapPainter extends CustomPainter {
-  const _FakeMapPainter({
+class _RoutePreviewPainter extends CustomPainter {
+  const _RoutePreviewPainter({
     required this.routePoints,
     required this.latestLocation,
   });
@@ -322,7 +325,7 @@ class _FakeMapPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _FakeMapPainter oldDelegate) {
+  bool shouldRepaint(covariant _RoutePreviewPainter oldDelegate) {
     return oldDelegate.routePoints != routePoints ||
         oldDelegate.latestLocation != latestLocation;
   }

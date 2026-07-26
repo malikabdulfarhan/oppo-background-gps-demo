@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 class TrackingHeader extends StatelessWidget {
   const TrackingHeader({
+    required this.isStarting,
     required this.isTracking,
     required this.polylinePointCount,
     required this.locationSampleCount,
@@ -11,6 +12,7 @@ class TrackingHeader extends StatelessWidget {
     super.key,
   });
 
+  final bool isStarting;
   final bool isTracking;
   final int polylinePointCount;
   final int locationSampleCount;
@@ -22,7 +24,14 @@ class TrackingHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final statusColor = isTracking
         ? const Color(0xFF12B76A)
+        : isStarting
+        ? const Color(0xFFF79009)
         : const Color(0xFF98A2B3);
+    final statusText = isTracking
+        ? 'Running'
+        : isStarting
+        ? 'Starting…'
+        : 'Stopped';
 
     return Card(
       shape: RoundedRectangleBorder(
@@ -65,7 +74,7 @@ class TrackingHeader extends StatelessWidget {
                           Icon(Icons.circle, size: 9, color: statusColor),
                           const SizedBox(width: 7),
                           Text(
-                            isTracking ? 'Running' : 'Stopped',
+                            statusText,
                             style: const TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w700,

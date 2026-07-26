@@ -1,30 +1,50 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../controllers/tracking_controller.dart';
+import '../services/location_service.dart';
 import '../widgets/location_log_list.dart';
 import '../widgets/map_placeholder.dart';
 import '../widgets/tracking_header.dart';
 
 class TrackingScreen extends StatefulWidget {
-  const TrackingScreen({super.key});
+  const TrackingScreen({this.locationService, super.key});
+
+  final LocationService? locationService;
 
   @override
   State<TrackingScreen> createState() => _TrackingScreenState();
 }
 
-class _TrackingScreenState extends State<TrackingScreen> {
+class _TrackingScreenState extends State<TrackingScreen>
+    with WidgetsBindingObserver {
   late final TrackingController _controller;
 
   @override
   void initState() {
     super.initState();
-    _controller = TrackingController();
+    WidgetsBinding.instance.addObserver(this);
+    _controller = TrackingController(locationService: widget.locationService);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    final leftForeground =
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached;
+    if (leftForeground && _controller.isTracking) {
+      unawaited(_controller.stopTracking());
+    }
   }
 
   @override
@@ -41,7 +61,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
             actions: [
               TextButton.icon(
                 onPressed: _controller.isTracking
-                    ? _controller.stopTracking
+                    ? () => _controller.stopTracking()
                     : null,
                 icon: const Icon(Icons.stop_circle_outlined, size: 20),
                 label: const Text('Stop'),
@@ -61,6 +81,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
               children: [
                 TrackingHeader(
+                  isStarting: _controller.isStarting,
                   isTracking: _controller.isTracking,
                   polylinePointCount: _controller.polylinePointCount,
                   locationSampleCount: _controller.locationSampleCount,
@@ -69,12 +90,20 @@ class _TrackingScreenState extends State<TrackingScreen> {
                   followLocation: _controller.followLocation,
                   onFollowChanged: _controller.setFollowLocation,
                 ),
+                if (_controller.errorMessage != null) ...[
+                  const SizedBox(height: 12),
+                  _TrackingErrorCard(
+                    message: _controller.errorMessage!,
+                    recoveryAction: _controller.recoveryAction,
+                    onRecoveryPressed: _openRecoverySettings,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 _TrackingControls(controller: _controller),
                 const SizedBox(height: 20),
                 _SectionHeading(
                   title: 'Route preview',
-                  subtitle: 'Simulated movement around the current location',
+                  subtitle: 'Live GPS route recorded on this device',
                   trailing: _controller.isTracking ? const _LiveBadge() : null,
                 ),
                 const SizedBox(height: 10),
@@ -100,6 +129,24 @@ class _TrackingScreenState extends State<TrackingScreen> {
       },
     );
   }
+
+  Future<void> _openRecoverySettings() async {
+    final opened = switch (_controller.recoveryAction) {
+      TrackingRecoveryAction.openAppSettings =>
+        await _controller.openAppSettings(),
+      TrackingRecoveryAction.openLocationSettings =>
+        await _controller.openLocationSettings(),
+      TrackingRecoveryAction.none => false,
+    };
+
+    if (!mounted || opened) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Unable to open settings on this device.')),
+    );
+  }
 }
 
 class _TrackingControls extends StatelessWidget {
@@ -121,14 +168,26 @@ class _TrackingControls extends StatelessWidget {
           runSpacing: 10,
           children: [
             FilledButton.icon(
-              onPressed: controller.isTracking
+              onPressed: controller.isTracking || controller.isStarting
                   ? null
-                  : controller.startTracking,
-              icon: const Icon(Icons.play_arrow_rounded),
-              label: const Text('Start Tracking'),
+                  : () => controller.startTracking(),
+              icon: controller.isStarting
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.play_arrow_rounded),
+              label: Text(
+                controller.isStarting ? 'Starting…' : 'Start Tracking',
+              ),
             ),
             OutlinedButton.icon(
-              onPressed: controller.isTracking ? controller.stopTracking : null,
+              onPressed: controller.isTracking || controller.isStarting
+                  ? () => controller.stopTracking()
+                  : null,
               icon: const Icon(Icons.stop_rounded),
               label: const Text('Stop Tracking'),
             ),
@@ -146,6 +205,61 @@ class _TrackingControls extends StatelessWidget {
               icon: const Icon(Icons.notes_rounded),
               label: const Text('Clear Logs'),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackingErrorCard extends StatelessWidget {
+  const _TrackingErrorCard({
+    required this.message,
+    required this.recoveryAction,
+    required this.onRecoveryPressed,
+  });
+
+  final String message;
+  final TrackingRecoveryAction recoveryAction;
+  final VoidCallback onRecoveryPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final actionLabel = switch (recoveryAction) {
+      TrackingRecoveryAction.openAppSettings => 'Open Settings',
+      TrackingRecoveryAction.openLocationSettings => 'Enable GPS',
+      TrackingRecoveryAction.none => null,
+    };
+
+    return Card(
+      color: const Color(0xFFFFF4ED),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0xFFFED7AA)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+        child: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Color(0xFFB54708)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: Color(0xFF7A2E0E),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            if (actionLabel != null) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: onRecoveryPressed,
+                child: Text(actionLabel),
+              ),
+            ],
           ],
         ),
       ),
