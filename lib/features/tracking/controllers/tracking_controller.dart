@@ -1,48 +1,129 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:flutter/services.dart';
 
 import '../models/location_record.dart';
-import '../services/location_service.dart';
+import '../services/android_tracking_service.dart';
+import '../services/tracking_models.dart';
+import '../services/tracking_service.dart';
 
 enum TrackingRecoveryAction { none, openAppSettings, openLocationSettings }
 
 class TrackingController extends ChangeNotifier {
-  TrackingController({LocationService? locationService})
-    : _locationService = locationService ?? LocationService();
+  TrackingController({TrackingService? trackingService})
+    : _trackingService = trackingService ?? const AndroidTrackingService();
 
-  static const updateInterval = LocationService.updateInterval;
+  static const updateInterval = Duration(seconds: 5);
 
-  final LocationService _locationService;
+  final TrackingService _trackingService;
   final List<LocationRecord> _records = [];
   final List<LocationRecord> _routePoints = [];
+  final Set<String> _knownRecordIds = {};
+  final Set<String> _hiddenLogIds = {};
+  final Set<String> _hiddenRouteIds = {};
 
-  StreamSubscription<Position>? _positionSubscription;
+  StreamSubscription<TrackingEvent>? _eventSubscription;
+  TrackingServiceStatus _serviceStatus = const TrackingServiceStatus.stopped();
+  BatteryOptimizationStatus _batteryStatus =
+      const BatteryOptimizationStatus.unknown();
+  bool _isInitializing = false;
+  bool _isInitialized = false;
   bool _isStarting = false;
-  bool _isTracking = false;
   bool _followLocation = true;
   bool _isDisposed = false;
   int _startRequestId = 0;
   int _locationSampleCount = 0;
   LocationRecord? _latestLocation;
   String? _errorMessage;
+  String? _warningMessage;
   TrackingRecoveryAction _recoveryAction = TrackingRecoveryAction.none;
 
+  bool get isInitializing => _isInitializing;
   bool get isStarting => _isStarting;
-  bool get isTracking => _isTracking;
+  bool get isTracking => _serviceStatus.isTracking;
+  bool get serviceRunning => _serviceStatus.serviceRunning;
   bool get followLocation => _followLocation;
   int get locationSampleCount => _locationSampleCount;
   int get polylinePointCount => _routePoints.length;
   LocationRecord? get latestLocation => _latestLocation;
   String? get errorMessage => _errorMessage;
+  String? get warningMessage => _warningMessage;
   TrackingRecoveryAction get recoveryAction => _recoveryAction;
+  TrackingServiceStatus get serviceStatus => _serviceStatus;
+  BatteryOptimizationStatus get batteryStatus => _batteryStatus;
   List<LocationRecord> get records => List.unmodifiable(_records);
   List<LocationRecord> get routePoints => List.unmodifiable(_routePoints);
 
-  Future<void> startTracking() async {
-    if (_isStarting || _isTracking || _isDisposed) {
+  Future<void> initialize() async {
+    if (_isInitializing || _isInitialized || _isDisposed) {
       return;
+    }
+    _isInitializing = true;
+    notifyListeners();
+    _ensureEventSubscription();
+    try {
+      await refreshNativeState(restoreRecords: true);
+      _isInitialized = true;
+    } on Object catch (error, stackTrace) {
+      debugPrint('Native tracking initialization failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _setError('Unable to read the native tracking service status.');
+    } finally {
+      if (!_isDisposed) {
+        _isInitializing = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> refreshNativeState({bool restoreRecords = true}) async {
+    if (_isDisposed) {
+      return;
+    }
+    _ensureEventSubscription();
+    final results = await Future.wait<Object>([
+      _trackingService.getStatus(),
+      _trackingService.getBatteryOptimizationStatus(),
+      if (restoreRecords) _trackingService.getCurrentSessionRecords(),
+    ]);
+    if (_isDisposed) {
+      return;
+    }
+    _serviceStatus = results[0] as TrackingServiceStatus;
+    _batteryStatus = results[1] as BatteryOptimizationStatus;
+    if (_serviceStatus.isTracking && !_serviceStatus.serviceRunning) {
+      final recoveryResult = await _trackingService.startTracking();
+      if (!_isDisposed) {
+        if (recoveryResult.success) {
+          _serviceStatus = _serviceStatus.copyWith(
+            isTracking: recoveryResult.isTracking,
+            serviceRunning: recoveryResult.isTracking,
+            sessionId: recoveryResult.sessionId,
+            notificationPermissionGranted:
+                recoveryResult.notificationPermissionGranted,
+          );
+        } else {
+          _applyStartFailure(recoveryResult);
+        }
+      }
+    }
+    if (restoreRecords) {
+      _mergePersistedRecords(results[2] as List<LocationRecord>);
+    }
+    _syncNotificationWarning();
+    notifyListeners();
+  }
+
+  Future<void> startTracking() async {
+    if (_isStarting || isTracking || _isDisposed) {
+      return;
+    }
+    if (!_isInitialized) {
+      await initialize();
+      if (_isDisposed || isTracking) {
+        return;
+      }
     }
 
     final requestId = ++_startRequestId;
@@ -52,28 +133,48 @@ class TrackingController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await _locationService.ensureReady();
+      final permissions = await _trackingService.ensurePermissions();
       if (!_isCurrentStartRequest(requestId)) {
         return;
       }
+      if (!permissions.locationGranted) {
+        _setError(
+          permissions.message,
+          recoveryAction: permissions.locationPermanentlyDenied
+              ? TrackingRecoveryAction.openAppSettings
+              : TrackingRecoveryAction.none,
+        );
+        return;
+      }
+      _warningMessage = _permissionWarning(permissions);
 
-      final stream = _locationService.getPositionStream();
-      _positionSubscription = stream.listen(
-        _handlePosition,
-        onError: (Object error) {
-          unawaited(_handleStreamError(error));
-        },
+      final result = await _trackingService.startTracking();
+      if (!_isCurrentStartRequest(requestId)) {
+        return;
+      }
+      if (!result.success) {
+        _applyStartFailure(result);
+        return;
+      }
+      _serviceStatus = _serviceStatus.copyWith(
+        isTracking: result.isTracking,
+        serviceRunning: result.isTracking,
+        sessionId: result.sessionId,
+        notificationPermissionGranted: result.notificationPermissionGranted,
       );
-      _isTracking = true;
-    } on LocationServiceException catch (error) {
-      if (_isCurrentStartRequest(requestId)) {
-        _applyLocationServiceFailure(error.failure);
-      }
-    } on Object {
-      if (_isCurrentStartRequest(requestId)) {
-        _errorMessage = 'Unable to start location tracking. Please try again.';
-        _recoveryAction = TrackingRecoveryAction.none;
-      }
+      _syncNotificationWarning();
+    } on PlatformException catch (error, stackTrace) {
+      debugPrint(
+        'Native tracking start failed [${error.code}]: ${error.message}',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+      _setError(_friendlyPlatformError(error));
+    } on Object catch (error, stackTrace) {
+      debugPrint('Native tracking start failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _setError(
+        'Unable to start background location tracking. Please try again.',
+      );
     } finally {
       if (_isCurrentStartRequest(requestId)) {
         _isStarting = false;
@@ -86,27 +187,38 @@ class TrackingController extends ChangeNotifier {
     if (_isDisposed) {
       return;
     }
-
     _startRequestId += 1;
     _isStarting = false;
-    _isTracking = false;
-    final subscription = _positionSubscription;
-    _positionSubscription = null;
+    try {
+      await _trackingService.stopTracking();
+      _serviceStatus = _serviceStatus.copyWith(
+        isTracking: false,
+        serviceRunning: false,
+      );
+      _errorMessage = null;
+      _recoveryAction = TrackingRecoveryAction.none;
+    } on Object catch (error, stackTrace) {
+      debugPrint('Native tracking stop failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _setError('Unable to stop the native tracking service.');
+    }
     notifyListeners();
-
-    await subscription?.cancel();
   }
 
-  Future<bool> openAppSettings() => _locationService.openAppSettings();
+  Future<bool> openAppSettings() => _trackingService.openAppSettings();
 
   Future<bool> openLocationSettings() =>
-      _locationService.openLocationSettings();
+      _trackingService.openLocationSettings();
+
+  Future<bool> openBatteryOptimizationSettings() =>
+      _trackingService.openBatteryOptimizationSettings();
+
+  Future<bool> shareCurrentLog() => _trackingService.shareCurrentLog();
 
   void setFollowLocation(bool value) {
     if (_followLocation == value) {
       return;
     }
-
     _followLocation = value;
     notifyListeners();
   }
@@ -115,7 +227,7 @@ class TrackingController extends ChangeNotifier {
     if (_routePoints.isEmpty) {
       return;
     }
-
+    _hiddenRouteIds.addAll(_routePoints.map((record) => record.identity));
     _routePoints.clear();
     notifyListeners();
   }
@@ -124,104 +236,173 @@ class TrackingController extends ChangeNotifier {
     if (_records.isEmpty) {
       return;
     }
-
+    _hiddenLogIds.addAll(_records.map((record) => record.identity));
     _records.clear();
     notifyListeners();
   }
 
-  bool _isCurrentStartRequest(int requestId) {
-    return !_isDisposed && requestId == _startRequestId;
-  }
+  bool _isCurrentStartRequest(int requestId) =>
+      !_isDisposed && requestId == _startRequestId;
 
-  void _handlePosition(Position position) {
-    if (_isDisposed || !_isValidPosition(position)) {
-      return;
-    }
-
-    final record = LocationRecord(
-      timestamp: position.timestamp,
-      latitude: position.latitude,
-      longitude: position.longitude,
-      accuracyMeters: position.accuracy,
+  void _ensureEventSubscription() {
+    _eventSubscription ??= _trackingService.events.listen(
+      _handleEvent,
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('Native tracking event stream failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+        if (!_isDisposed) {
+          _setError(
+            'The live service connection was interrupted. Reopen the app to reconnect.',
+          );
+          notifyListeners();
+        }
+      },
     );
-
-    _latestLocation = record;
-    _records.insert(0, record);
-    _locationSampleCount += 1;
-
-    final previousPoint = _routePoints.lastOrNull;
-    final isDuplicate =
-        previousPoint != null &&
-        previousPoint.latitude == record.latitude &&
-        previousPoint.longitude == record.longitude;
-    if (!isDuplicate) {
-      _routePoints.add(record);
-    }
-
-    notifyListeners();
   }
 
-  bool _isValidPosition(Position position) {
-    return position.latitude.isFinite &&
-        position.longitude.isFinite &&
-        position.accuracy.isFinite &&
-        position.latitude >= -90 &&
-        position.latitude <= 90 &&
-        position.longitude >= -180 &&
-        position.longitude <= 180 &&
-        position.accuracy >= 0;
-  }
-
-  Future<void> _handleStreamError(Object error) async {
+  void _handleEvent(TrackingEvent event) {
     if (_isDisposed) {
       return;
     }
-
-    final subscription = _positionSubscription;
-    _positionSubscription = null;
-    _isTracking = false;
-
-    if (error is LocationServiceDisabledException) {
-      _errorMessage =
-          'Location services are turned off. Enable GPS to continue.';
-      _recoveryAction = TrackingRecoveryAction.openLocationSettings;
-    } else {
-      _errorMessage =
-          'Location updates stopped unexpectedly. Please start tracking again.';
-      _recoveryAction = TrackingRecoveryAction.none;
+    switch (event.type) {
+      case TrackingEventType.location:
+        final location = event.location;
+        if (location != null) {
+          _addLocation(location);
+          _serviceStatus = _serviceStatus.copyWith(
+            isTracking: true,
+            serviceRunning: true,
+            lastLocationTimestamp: location.timestamp,
+            currentProvider: location.provider,
+            screenState: location.screenState,
+          );
+        }
+      case TrackingEventType.trackingStarted:
+        _serviceStatus = _serviceStatus.copyWith(
+          isTracking: true,
+          serviceRunning: true,
+          sessionId: event.sessionId,
+        );
+      case TrackingEventType.trackingStopped:
+        _serviceStatus = _serviceStatus.copyWith(
+          isTracking: false,
+          serviceRunning: false,
+        );
+      case TrackingEventType.serviceStatus:
+        final status = event.status;
+        if (status != null) {
+          _serviceStatus = status;
+          _syncNotificationWarning();
+        }
+      case TrackingEventType.providerStatus:
+        if (event.providerEnabled == false) {
+          _warningMessage =
+              '${event.provider ?? 'Location'} provider is disabled. Tracking will resume when a provider is available.';
+        } else if (_warningMessage?.contains('provider is disabled') ?? false) {
+          _warningMessage = null;
+        }
+      case TrackingEventType.error:
+        _setError(
+          event.message ?? 'The native location service reported an error.',
+        );
+      case TrackingEventType.unknown:
+        break;
     }
     notifyListeners();
-
-    await subscription?.cancel();
   }
 
-  void _applyLocationServiceFailure(LocationServiceFailure failure) {
-    _isTracking = false;
-    switch (failure) {
-      case LocationServiceFailure.serviceDisabled:
-        _errorMessage =
-            'Location services are turned off. Enable GPS to continue.';
-        _recoveryAction = TrackingRecoveryAction.openLocationSettings;
-        break;
-      case LocationServiceFailure.permissionDenied:
-        _errorMessage =
-            'Location permission was denied. Allow access and try again.';
-        _recoveryAction = TrackingRecoveryAction.none;
-        break;
-      case LocationServiceFailure.permissionDeniedForever:
-        _errorMessage =
-            'Location permission is permanently denied. Open app settings to allow it.';
-        _recoveryAction = TrackingRecoveryAction.openAppSettings;
-        break;
+  void _mergePersistedRecords(List<LocationRecord> records) {
+    final sorted = [...records]
+      ..sort((a, b) {
+        final sequenceComparison = (a.sequence ?? 0).compareTo(b.sequence ?? 0);
+        return sequenceComparison != 0
+            ? sequenceComparison
+            : a.timestamp.compareTo(b.timestamp);
+      });
+    for (final record in sorted) {
+      _addLocation(record, notify: false);
     }
+  }
+
+  void _addLocation(LocationRecord record, {bool notify = true}) {
+    if (!_knownRecordIds.add(record.identity)) {
+      return;
+    }
+    _latestLocation = record;
+    _locationSampleCount += 1;
+    if (!_hiddenLogIds.contains(record.identity)) {
+      _records.insert(0, record);
+    }
+    if (!_hiddenRouteIds.contains(record.identity)) {
+      final previous = _routePoints.lastOrNull;
+      final duplicateCoordinate =
+          previous != null &&
+          previous.latitude == record.latitude &&
+          previous.longitude == record.longitude;
+      if (!duplicateCoordinate) {
+        _routePoints.add(record);
+      }
+    }
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  String? _permissionWarning(TrackingPermissionStatus permissions) {
+    if (!permissions.preciseLocationGranted) {
+      return 'Approximate location is active. Enable precise location in app settings for better routes.';
+    }
+    if (!permissions.notificationPermissionGranted) {
+      return 'Notification permission is denied. Open app settings so Android can show the required persistent tracking notification.';
+    }
+    return null;
+  }
+
+  void _syncNotificationWarning() {
+    if (!_serviceStatus.notificationPermissionGranted) {
+      _warningMessage =
+          'Notification permission is denied. Open app settings so Android can show the required persistent tracking notification.';
+    } else if (_warningMessage?.startsWith('Notification permission') ??
+        false) {
+      _warningMessage = null;
+    }
+  }
+
+  void _applyStartFailure(TrackingStartResult result) {
+    final action = switch (result.errorCode) {
+      'GPS_DISABLED' => TrackingRecoveryAction.openLocationSettings,
+      'PERMISSION_DENIED' => TrackingRecoveryAction.openAppSettings,
+      _ => TrackingRecoveryAction.none,
+    };
+    _serviceStatus = _serviceStatus.copyWith(
+      isTracking: false,
+      serviceRunning: false,
+    );
+    _setError(result.message, recoveryAction: action);
+  }
+
+  String _friendlyPlatformError(PlatformException error) {
+    return switch (error.code) {
+      'PERMISSION_REQUEST_ACTIVE' =>
+        'A permission request is already open. Complete it and try again.',
+      _ => 'Android could not start the native tracking service.',
+    };
+  }
+
+  void _setError(
+    String message, {
+    TrackingRecoveryAction recoveryAction = TrackingRecoveryAction.none,
+  }) {
+    _errorMessage = message;
+    _recoveryAction = recoveryAction;
   }
 
   @override
   void dispose() {
     _isDisposed = true;
     _startRequestId += 1;
-    unawaited(_positionSubscription?.cancel());
-    _positionSubscription = null;
+    unawaited(_eventSubscription?.cancel());
+    _eventSubscription = null;
     super.dispose();
   }
 }

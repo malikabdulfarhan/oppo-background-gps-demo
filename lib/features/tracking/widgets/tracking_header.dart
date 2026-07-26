@@ -4,6 +4,7 @@ class TrackingHeader extends StatelessWidget {
   const TrackingHeader({
     required this.isStarting,
     required this.isTracking,
+    required this.hasServiceError,
     required this.polylinePointCount,
     required this.locationSampleCount,
     required this.updateIntervalMs,
@@ -14,6 +15,7 @@ class TrackingHeader extends StatelessWidget {
 
   final bool isStarting;
   final bool isTracking;
+  final bool hasServiceError;
   final int polylinePointCount;
   final int locationSampleCount;
   final int updateIntervalMs;
@@ -22,13 +24,17 @@ class TrackingHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusColor = isTracking
+    final statusColor = hasServiceError
+        ? const Color(0xFFD92D20)
+        : isTracking
         ? const Color(0xFF12B76A)
         : isStarting
         ? const Color(0xFFF79009)
         : const Color(0xFF98A2B3);
-    final statusText = isTracking
-        ? 'Running'
+    final statusText = hasServiceError
+        ? 'Service error'
+        : isTracking
+        ? 'Running in background'
         : isStarting
         ? 'Starting…'
         : 'Stopped';

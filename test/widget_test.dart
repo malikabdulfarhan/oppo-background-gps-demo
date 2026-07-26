@@ -2,18 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:oppo_background_gps_demo/features/tracking/models/location_record.dart';
 import 'package:oppo_background_gps_demo/features/tracking/screens/tracking_screen.dart';
-import 'package:oppo_background_gps_demo/features/tracking/services/location_service.dart';
+import 'package:oppo_background_gps_demo/features/tracking/services/tracking_models.dart';
+import 'package:oppo_background_gps_demo/features/tracking/services/tracking_service.dart';
 
 void main() {
-  testWidgets('tracking screen starts and displays a real position record', (
+  testWidgets('tracking screen starts native service and displays an event', (
     tester,
   ) async {
-    final service = _FakeLocationService();
+    final service = _WidgetFakeTrackingService();
     await tester.pumpWidget(
-      MaterialApp(home: TrackingScreen(locationService: service)),
+      MaterialApp(home: TrackingScreen(trackingService: service)),
     );
+    await tester.pumpAndSettle();
 
     expect(find.text('Map Track Demo'), findsOneWidget);
     expect(find.text('Stopped'), findsOneWidget);
@@ -22,9 +24,18 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Start Tracking'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Running'), findsOneWidget);
+    expect(find.text('Running in background'), findsOneWidget);
 
-    service.addPosition(_position(latitude: 24.861, longitude: 67.002));
+    service.emitLocation(
+      LocationRecord(
+        sequence: 1,
+        timestamp: DateTime.utc(2026, 7, 26, 12),
+        latitude: 24.861,
+        longitude: 67.002,
+        accuracyMeters: 4.2,
+        provider: 'gps',
+      ),
+    );
     await tester.pump();
     await tester.scrollUntilVisible(
       find.text('MOV 5s'),
@@ -40,15 +51,54 @@ void main() {
   });
 }
 
-class _FakeLocationService implements LocationService {
-  final StreamController<Position> _positions =
-      StreamController<Position>.broadcast();
+class _WidgetFakeTrackingService implements TrackingService {
+  final StreamController<TrackingEvent> _events =
+      StreamController<TrackingEvent>.broadcast();
 
   @override
-  Future<void> ensureReady() async {}
+  Future<TrackingPermissionStatus> ensurePermissions() async =>
+      const TrackingPermissionStatus(
+        locationGranted: true,
+        preciseLocationGranted: true,
+        locationPermanentlyDenied: false,
+        notificationPermissionGranted: true,
+        message: 'Permissions granted',
+      );
 
   @override
-  Stream<Position> getPositionStream() => _positions.stream;
+  Future<TrackingStartResult> startTracking() async =>
+      const TrackingStartResult(
+        success: true,
+        isTracking: true,
+        sessionId: 'session-1',
+        message: 'Tracking started',
+      );
+
+  @override
+  Future<void> stopTracking() async {}
+
+  @override
+  Future<TrackingServiceStatus> getStatus() async =>
+      const TrackingServiceStatus.stopped();
+
+  @override
+  Stream<TrackingEvent> get events => _events.stream;
+
+  @override
+  Future<TrackingSession?> getCurrentSession() async => null;
+
+  @override
+  Future<List<LocationRecord>> getCurrentSessionRecords() async => const [];
+
+  @override
+  Future<List<TrackingSession>> listTrackingSessions() async => const [];
+
+  @override
+  Future<BatteryOptimizationStatus> getBatteryOptimizationStatus() async =>
+      const BatteryOptimizationStatus.unknown();
+
+  @override
+  Future<bool> openBatteryOptimizationSettings() async => true;
 
   @override
   Future<bool> openAppSettings() async => true;
@@ -56,22 +106,14 @@ class _FakeLocationService implements LocationService {
   @override
   Future<bool> openLocationSettings() async => true;
 
-  void addPosition(Position position) => _positions.add(position);
+  @override
+  Future<bool> shareCurrentLog() async => true;
 
-  Future<void> close() => _positions.close();
-}
+  void emitLocation(LocationRecord location) {
+    _events.add(
+      TrackingEvent(type: TrackingEventType.location, location: location),
+    );
+  }
 
-Position _position({required double latitude, required double longitude}) {
-  return Position(
-    latitude: latitude,
-    longitude: longitude,
-    timestamp: DateTime(2026, 7, 26, 12),
-    accuracy: 4.2,
-    altitude: 0,
-    altitudeAccuracy: 0,
-    heading: 0,
-    headingAccuracy: 0,
-    speed: 0,
-    speedAccuracy: 0,
-  );
+  Future<void> close() => _events.close();
 }
