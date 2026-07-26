@@ -36,6 +36,49 @@ void main() {
       },
     );
 
+    test('starts Android GPS tracking when AMap key is missing', () async {
+      service.amapConfiguration = const AmapConfiguration.unavailable();
+      service.locationEngineConfiguration = const LocationEngineConfiguration(
+        selected: LocationEnginePreference.automatic,
+        resolved: LocationEngineType.androidLocationManager,
+        fallbackReason: 'AMap API key is not configured.',
+      );
+
+      await controller.startTracking();
+
+      expect(service.startCalls, 1);
+      expect(controller.isTracking, isTrue);
+      expect(
+        controller.locationEngineConfiguration.resolved,
+        LocationEngineType.androidLocationManager,
+      );
+    });
+
+    test('privacy decline still allows Android GPS tracking', () async {
+      service.amapConfiguration = const AmapConfiguration.unavailable();
+      service.locationEngineConfiguration = const LocationEngineConfiguration(
+        selected: LocationEnginePreference.androidGpsDemo,
+        resolved: LocationEngineType.androidLocationManager,
+      );
+
+      await controller.setAmapPrivacyConsent(AmapPrivacyConsent.declined);
+      await controller.startTracking();
+
+      expect(service.startCalls, 1);
+      expect(controller.isTracking, isTrue);
+    });
+
+    test('location engine cannot change while tracking', () async {
+      await controller.startTracking();
+
+      await controller.setLocationEnginePreference(
+        LocationEnginePreference.androidGpsDemo,
+      );
+
+      expect(service.enginePreferenceCalls, 0);
+      expect(controller.errorMessage, contains('Stop tracking'));
+    });
+
     test(
       'surfaces a native start failure without raw platform details',
       () async {
@@ -194,6 +237,19 @@ class FakeTrackingService implements TrackingService {
   int permissionCalls = 0;
   int startCalls = 0;
   int stopCalls = 0;
+  int enginePreferenceCalls = 0;
+  AmapConfiguration amapConfiguration = const AmapConfiguration(
+    apiKeyConfigured: true,
+    privacyConsent: AmapPrivacyConsent.accepted,
+    sdkInitialized: false,
+    locationEngine: 'AMAP',
+  );
+  LocationEngineConfiguration locationEngineConfiguration =
+      const LocationEngineConfiguration(
+        selected: LocationEnginePreference.amap,
+        resolved: LocationEngineType.amap,
+        amapOptionAvailable: true,
+      );
 
   bool get hasEventListener => _events.hasListener;
 
@@ -229,6 +285,65 @@ class FakeTrackingService implements TrackingService {
 
   @override
   Future<List<TrackingSession>> listTrackingSessions() async => const [];
+
+  @override
+  Future<TrackingSessionRecords> getSessionRecords(String sessionId) async =>
+      const TrackingSessionRecords(records: []);
+
+  @override
+  Future<bool> shareSessionLog(String sessionId) async => true;
+
+  @override
+  Future<SessionOperationResult> deleteSession(String sessionId) async =>
+      const SessionOperationResult(success: true, message: 'Deleted');
+
+  @override
+  Future<AmapConfiguration> getAmapConfiguration() async => amapConfiguration;
+
+  @override
+  Future<LocationEngineConfiguration> getLocationEngineConfiguration() async =>
+      locationEngineConfiguration;
+
+  @override
+  Future<LocationEngineConfiguration> setLocationEnginePreference(
+    LocationEnginePreference preference,
+  ) async {
+    enginePreferenceCalls += 1;
+    locationEngineConfiguration = LocationEngineConfiguration(
+      selected: preference,
+      resolved: preference == LocationEnginePreference.amap
+          ? LocationEngineType.amap
+          : LocationEngineType.androidLocationManager,
+      amapOptionAvailable: true,
+    );
+    return locationEngineConfiguration;
+  }
+
+  @override
+  Future<LocationEngineConfiguration> retryAmapInitialization() =>
+      getLocationEngineConfiguration();
+
+  @override
+  Future<AmapConfiguration> setAmapPrivacyConsent(
+    AmapPrivacyConsent consent,
+  ) async {
+    amapConfiguration = AmapConfiguration(
+      apiKeyConfigured: true,
+      privacyConsent: consent,
+      sdkInitialized: false,
+      locationEngine: 'AMAP',
+    );
+    return amapConfiguration;
+  }
+
+  @override
+  Future<TrackingMapPreferences> getMapPreferences() async =>
+      const TrackingMapPreferences();
+
+  @override
+  Future<TrackingMapPreferences> setMapPreferences(
+    TrackingMapPreferences preferences,
+  ) async => preferences;
 
   @override
   Future<BatteryOptimizationStatus> getBatteryOptimizationStatus() async =>

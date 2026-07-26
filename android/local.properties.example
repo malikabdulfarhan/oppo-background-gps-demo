@@ -1,0 +1,3 @@
+# Copy this line into android/local.properties and replace only the local value.
+# Never commit android/local.properties or a real AMap key.
+AMAP_API_KEY=replace_with_your_amap_android_key

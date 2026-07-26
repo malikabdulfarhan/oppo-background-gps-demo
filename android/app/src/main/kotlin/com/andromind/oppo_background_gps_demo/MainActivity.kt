@@ -1,5 +1,7 @@
 package com.andromind.oppo_background_gps_demo
 
+import com.andromind.oppo_background_gps_demo.amap.AmapMapViewFactory
+import com.andromind.oppo_background_gps_demo.amap.AmapTrackingMapView
 import com.andromind.oppo_background_gps_demo.tracking.TrackingEventBridge
 import com.andromind.oppo_background_gps_demo.tracking.TrackingServiceController
 import io.flutter.embedding.android.FlutterActivity
@@ -21,6 +23,13 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             TrackingServiceController.EVENT_CHANNEL,
         ).setStreamHandler(TrackingEventBridge)
+        flutterEngine.platformViewsController.registry.registerViewFactory(
+            AmapTrackingMapView.VIEW_TYPE,
+            AmapMapViewFactory(
+                flutterEngine.dartExecutor.binaryMessenger,
+                lifecycle,
+            ),
+        )
     }
 
     override fun onRequestPermissionsResult(

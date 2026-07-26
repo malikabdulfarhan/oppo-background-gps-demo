@@ -12,6 +12,20 @@ class LocationRecord {
     this.batteryPercent,
     this.screenState,
     this.appProcessState,
+    this.locationEngine = 'AMAP',
+    this.amapLocationType,
+    this.amapErrorCode,
+    this.amapErrorInfo,
+    this.gpsAccuracyStatus,
+    this.satelliteCount,
+    this.isMock,
+    this.coordinateSystem = 'GCJ02',
+    this.country,
+    this.province,
+    this.city,
+    this.district,
+    this.street,
+    this.address,
     this.movementType = 'MOV 5s',
   });
 
@@ -27,6 +41,20 @@ class LocationRecord {
   final int? batteryPercent;
   final String? screenState;
   final String? appProcessState;
+  final String locationEngine;
+  final int? amapLocationType;
+  final int? amapErrorCode;
+  final String? amapErrorInfo;
+  final int? gpsAccuracyStatus;
+  final int? satelliteCount;
+  final bool? isMock;
+  final String coordinateSystem;
+  final String? country;
+  final String? province;
+  final String? city;
+  final String? district;
+  final String? street;
+  final String? address;
   final String movementType;
 
   String get identity =>
@@ -69,6 +97,20 @@ class LocationRecord {
       batteryPercent: _intValue(map['batteryPercent']),
       screenState: _stringValue(map['screenState']),
       appProcessState: _stringValue(map['appProcessState']),
+      locationEngine: _stringValue(map['locationEngine']) ?? 'LEGACY',
+      amapLocationType: _intValue(map['amapLocationType']),
+      amapErrorCode: _intValue(map['amapErrorCode']),
+      amapErrorInfo: _stringValue(map['amapErrorInfo']),
+      gpsAccuracyStatus: _intValue(map['gpsAccuracyStatus']),
+      satelliteCount: _intValue(map['satelliteCount']),
+      isMock: map['isMock'] is bool ? map['isMock'] as bool : null,
+      coordinateSystem: _stringValue(map['coordinateSystem']) ?? 'WGS84_LEGACY',
+      country: _stringValue(map['country']),
+      province: _stringValue(map['province']),
+      city: _stringValue(map['city']),
+      district: _stringValue(map['district']),
+      street: _stringValue(map['street']),
+      address: _stringValue(map['address']),
     );
   }
 

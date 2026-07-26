@@ -1,6 +1,5 @@
 package com.andromind.oppo_background_gps_demo.tracking
 
-import android.Manifest
 import android.app.ActivityManager
 import android.app.KeyguardManager
 import android.app.Service
@@ -8,27 +7,25 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.BatteryManager
-import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
-import androidx.core.app.ActivityCompat
 import androidx.core.app.ServiceCompat
+import com.andromind.oppo_background_gps_demo.amap.AmapSdkConfiguration
+import com.andromind.oppo_background_gps_demo.tracking.engine.AmapNativeLocationEngine
+import com.andromind.oppo_background_gps_demo.tracking.engine.AndroidLocationManagerEngine
+import com.andromind.oppo_background_gps_demo.tracking.engine.NativeLocationEngine
+import com.andromind.oppo_background_gps_demo.tracking.engine.NativeLocationEvent
+import java.util.Locale
 
-class LocationTrackingService : Service(), LocationListener {
-    private lateinit var locationManager: LocationManager
+class LocationTrackingService : Service() {
     private lateinit var logStore: TrackingLogStore
     private lateinit var notificationManager: TrackingNotificationManager
-    private var listenersRegistered = false
+    private var locationEngine: NativeLocationEngine? = null
     private var screenReceiverRegistered = false
     private var foregroundStarted = false
+    private var engineStarted = false
     private var explicitlyStopped = false
-    private var lastLatitude: Double? = null
-    private var lastLongitude: Double? = null
 
     private val screenStateReceiver =
         object : BroadcastReceiver() {
@@ -50,7 +47,6 @@ class LocationTrackingService : Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         logStore = TrackingLogStore(this)
         notificationManager = TrackingNotificationManager(this)
         try {
@@ -74,9 +70,6 @@ class LocationTrackingService : Service(), LocationListener {
             stopSelf()
         }
         registerScreenReceiver()
-        val previous = logStore.lastCoordinates()
-        lastLatitude = previous.first
-        lastLongitude = previous.second
     }
 
     override fun onStartCommand(
@@ -91,7 +84,6 @@ class LocationTrackingService : Service(), LocationListener {
             stopTrackingExplicitly("Notification or app stop action")
             return START_NOT_STICKY
         }
-
         val isStickyRestart = intent == null
         if (isStickyRestart && !logStore.isTrackingActive()) {
             stopSelf()
@@ -106,9 +98,8 @@ class LocationTrackingService : Service(), LocationListener {
             } else if (isStickyRestart) {
                 logStore.append("SERVICE_RESTARTED")
             }
-            val wasRegistered = listenersRegistered
-            startLocationUpdates()
-            if (!wasRegistered) {
+            if (!engineStarted) {
+                startConfiguredEngine()
                 logStore.append("SERVICE_STARTED")
                 TrackingEventBridge.emit(
                     mapOf(
@@ -116,28 +107,22 @@ class LocationTrackingService : Service(), LocationListener {
                         "sessionId" to logStore.currentSession()?.sessionId,
                         "message" to
                             if (isStickyRestart) {
-                                "Tracking service restarted"
+                                "Tracking service restarted with ${activeEngineType?.wireValue}"
                             } else {
-                                "Tracking started"
+                                "Tracking started with ${activeEngineType?.wireValue}"
                             },
                     ),
                 )
             }
             emitServiceStatus()
         } catch (error: SecurityException) {
-            reportError("Location permission is missing or was revoked.")
-            logStore.setTrackingActive(false)
-            stopForegroundAndSelf()
+            failServiceStart("Location permission is missing or was revoked.")
             return START_NOT_STICKY
         } catch (error: IllegalStateException) {
-            reportError(error.message ?: "Location providers are disabled.")
-            logStore.setTrackingActive(false)
-            stopForegroundAndSelf()
+            failServiceStart(error.message ?: "Location providers are disabled.")
             return START_NOT_STICKY
         } catch (error: Exception) {
-            reportError("Native tracking service failed to start.")
-            logStore.setTrackingActive(false)
-            stopForegroundAndSelf()
+            failServiceStart("Native tracking service failed to start.")
             return START_NOT_STICKY
         }
         return START_STICKY
@@ -145,89 +130,8 @@ class LocationTrackingService : Service(), LocationListener {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onLocationChanged(location: Location) {
-        val sample =
-            TrackingSample(
-                timestamp = TrackingTime.format(java.util.Date(location.time)),
-                latitude = location.latitude,
-                longitude = location.longitude,
-                accuracy = location.accuracy,
-                provider = location.provider ?: "unknown",
-                speed = if (location.hasSpeed()) location.speed else null,
-                bearing = if (location.hasBearing()) location.bearing else null,
-                altitude = if (location.hasAltitude()) location.altitude else null,
-                batteryPercent = currentBatteryPercent(),
-                screenState = currentScreenState(),
-                appProcessState = currentAppProcessState(),
-            )
-
-        if (!TrackingValidator.isValid(sample.latitude, sample.longitude, sample.accuracy)) {
-            logStore.append(
-                "LOCATION_REJECTED_INVALID",
-                sample,
-                "Coordinate or accuracy failed validation",
-            )
-            return
-        }
-        if (
-            TrackingValidator.isDuplicate(
-                sample.latitude,
-                sample.longitude,
-                lastLatitude,
-                lastLongitude,
-            )
-        ) {
-            logStore.append(
-                "LOCATION_REJECTED_DUPLICATE",
-                sample,
-                "Exactly duplicated consecutive coordinate",
-            )
-            return
-        }
-
-        val record = logStore.append("LOCATION_RECEIVED", sample)
-        lastLatitude = sample.latitude
-        lastLongitude = sample.longitude
-        notificationManager.update(
-            "%.6f, %.6f".format(java.util.Locale.US, sample.latitude, sample.longitude),
-        )
-        TrackingEventBridge.emit(record.toLocationMap())
-        emitServiceStatus()
-    }
-
-    @Deprecated("Deprecated by Android but required by LocationListener")
-    override fun onStatusChanged(
-        provider: String?,
-        status: Int,
-        extras: Bundle?,
-    ) = Unit
-
-    override fun onProviderEnabled(provider: String) {
-        logStore.append("PROVIDER_ENABLED", message = provider)
-        TrackingEventBridge.emit(
-            mapOf(
-                "type" to "providerStatus",
-                "provider" to provider,
-                "enabled" to true,
-                "message" to "$provider provider enabled",
-            ),
-        )
-    }
-
-    override fun onProviderDisabled(provider: String) {
-        logStore.append("PROVIDER_DISABLED", message = provider)
-        TrackingEventBridge.emit(
-            mapOf(
-                "type" to "providerStatus",
-                "provider" to provider,
-                "enabled" to false,
-                "message" to "$provider provider disabled",
-            ),
-        )
-    }
-
     override fun onDestroy() {
-        removeLocationUpdates()
+        disposeLocationEngine()
         unregisterScreenReceiver()
         runCatching { logStore.append("SERVICE_DESTROYED") }
         if (explicitlyStopped) {
@@ -244,47 +148,203 @@ class LocationTrackingService : Service(), LocationListener {
         super.onDestroy()
     }
 
-    private fun startLocationUpdates() {
-        if (listenersRegistered) {
-            return
-        }
-        if (
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
-                PackageManager.PERMISSION_GRANTED &&
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) !=
-                PackageManager.PERMISSION_GRANTED
-        ) {
-            throw SecurityException("Location permission is not granted")
-        }
-
-        val enabledProviders =
-            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-                .filter { provider ->
-                    runCatching {
-                        locationManager.getProvider(provider) != null &&
-                            locationManager.isProviderEnabled(provider)
-                    }.getOrDefault(false)
+    private fun startConfiguredEngine() {
+        val selection = LocationEngineConfiguration.resolve(this)
+        if (selection.engine == LocationEngineType.AMAP) {
+            try {
+                startEngine(LocationEngineType.AMAP)
+                LocationEngineConfiguration.setFallbackReason(this, null)
+                return
+            } catch (error: Throwable) {
+                val reason =
+                    "AMap initialization failed. Android GPS Demo Mode is active."
+                AmapSdkConfiguration.markRuntimeFailed(
+                    error.message ?: "AMap location initialization failed.",
+                )
+                LocationEngineConfiguration.setFallbackReason(this, reason)
+                runCatching {
+                    logStore.append(
+                        "AMAP_LOCATION_ERROR",
+                        message = sanitizeMessage(error.message ?: reason),
+                    )
                 }
-        if (enabledProviders.isEmpty()) {
-            throw IllegalStateException("Location services are turned off. Enable GPS to continue.")
-        }
-        enabledProviders.forEach { provider ->
-            locationManager.requestLocationUpdates(
-                provider,
-                UPDATE_INTERVAL_MS,
-                MINIMUM_DISTANCE_METERS,
+                disposeLocationEngine()
+                TrackingEventBridge.emit(
+                    mapOf(
+                        "type" to "providerStatus",
+                        "provider" to "AMap",
+                        "enabled" to false,
+                        "message" to reason,
+                    ),
+                )
+            }
+        } else {
+            LocationEngineConfiguration.setFallbackReason(
                 this,
+                selection.fallbackReason,
             )
         }
-        listenersRegistered = true
+        startEngine(LocationEngineType.ANDROID_LOCATION_MANAGER)
     }
 
-    private fun removeLocationUpdates() {
-        if (!listenersRegistered) {
+    private fun startEngine(type: LocationEngineType) {
+        check(locationEngine == null) {
+            "A location engine is already active."
+        }
+        logStore.setSessionLocationEngine(type)
+        val engine =
+            when (type) {
+                LocationEngineType.AMAP ->
+                    AmapNativeLocationEngine(
+                        context = this,
+                        updateIntervalMillis = UPDATE_INTERVAL_MS,
+                        onEvent = ::handleEngineEvent,
+                    )
+                LocationEngineType.ANDROID_LOCATION_MANAGER ->
+                    AndroidLocationManagerEngine(
+                        context = this,
+                        updateIntervalMillis = UPDATE_INTERVAL_MS,
+                        onEvent = ::handleEngineEvent,
+                    )
+            }
+        locationEngine = engine
+        activeEngineType = type
+        logStore.append(
+            if (type == LocationEngineType.AMAP) {
+                "AMAP_INITIALIZING"
+            } else {
+                "ANDROID_LOCATION_MANAGER_INITIALIZING"
+            },
+        )
+        try {
+            engine.initialize()
+            logStore.append(
+                if (type == LocationEngineType.AMAP) {
+                    "AMAP_INITIALIZED"
+                } else {
+                    "ANDROID_LOCATION_MANAGER_INITIALIZED"
+                },
+            )
+            engine.start()
+            engineStarted = true
+            logStore.append(
+                if (type == LocationEngineType.AMAP) {
+                    "AMAP_LOCATION_STARTED"
+                } else {
+                    "ANDROID_LOCATION_MANAGER_STARTED"
+                },
+            )
+        } catch (error: Throwable) {
+            engine.dispose()
+            locationEngine = null
+            activeEngineType = null
+            engineStarted = false
+            throw error
+        }
+    }
+
+    private fun handleEngineEvent(event: NativeLocationEvent) {
+        when (event) {
+            is NativeLocationEvent.LocationSample -> handleLocationSample(event.sample)
+            is NativeLocationEvent.Error -> handleLocationError(event)
+            is NativeLocationEvent.ProviderStatus -> {
+                logStore.append(
+                    if (event.enabled) "PROVIDER_ENABLED" else "PROVIDER_DISABLED",
+                    message = event.provider,
+                )
+                TrackingEventBridge.emit(
+                    mapOf(
+                        "type" to "providerStatus",
+                        "provider" to event.provider,
+                        "enabled" to event.enabled,
+                        "message" to
+                            "${event.provider} provider " +
+                                if (event.enabled) "enabled" else "disabled",
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun handleLocationSample(engineSample: TrackingSample) {
+        val sample =
+            engineSample.copy(
+                batteryPercent = currentBatteryPercent(),
+                screenState = currentScreenState(),
+                appProcessState = currentAppProcessState(),
+            )
+        if (!TrackingValidator.isValid(sample.latitude, sample.longitude, sample.accuracy)) {
+            logStore.append(
+                "LOCATION_REJECTED_INVALID",
+                sample,
+                "Coordinate or accuracy failed validation",
+            )
             return
         }
-        runCatching { locationManager.removeUpdates(this) }
-        listenersRegistered = false
+
+        // Stationary callbacks remain in the CSV. Flutter independently removes
+        // exact consecutive duplicate points from the displayed polyline.
+        val record = logStore.append("LOCATION_RECEIVED", sample)
+        notificationManager.update(
+            "%.6f, %.6f".format(Locale.US, sample.latitude, sample.longitude),
+        )
+        TrackingEventBridge.emit(record.toLocationMap())
+        emitServiceStatus()
+    }
+
+    private fun handleLocationError(error: NativeLocationEvent.Error) {
+        val sample =
+            error.sample?.copy(
+                batteryPercent = currentBatteryPercent(),
+                screenState = currentScreenState(),
+                appProcessState = currentAppProcessState(),
+            )
+        logStore.append(
+            if (activeEngineType == LocationEngineType.AMAP) {
+                "AMAP_LOCATION_ERROR"
+            } else {
+                "ANDROID_LOCATION_ERROR"
+            },
+            sample,
+            sanitizeMessage(error.message),
+        )
+        TrackingEventBridge.emit(
+            mapOf(
+                "type" to "error",
+                "code" to error.code?.let { "AMAP_$it" },
+                "message" to sanitizeMessage(error.message),
+            ),
+        )
+        emitServiceStatus()
+    }
+
+    private fun disposeLocationEngine() {
+        val engine = locationEngine ?: return
+        if (engineStarted) {
+            runCatching { engine.stop() }
+            runCatching {
+                logStore.append(
+                    if (engine.type == LocationEngineType.AMAP) {
+                        "AMAP_LOCATION_STOPPED"
+                    } else {
+                        "ANDROID_LOCATION_MANAGER_STOPPED"
+                    },
+                )
+            }
+        }
+        runCatching { engine.dispose() }
+        runCatching {
+            logStore.append(
+                if (engine.type == LocationEngineType.AMAP) {
+                    "AMAP_CLIENT_DESTROYED"
+                } else {
+                    "ANDROID_LOCATION_MANAGER_DESTROYED"
+                },
+            )
+        }
+        locationEngine = null
+        engineStarted = false
+        activeEngineType = null
     }
 
     private fun stopTrackingExplicitly(message: String) {
@@ -294,7 +354,7 @@ class LocationTrackingService : Service(), LocationListener {
         explicitlyStopped = true
         runCatching { logStore.append("SERVICE_STOP_REQUESTED", message = message) }
         logStore.setTrackingActive(false)
-        removeLocationUpdates()
+        disposeLocationEngine()
         runCatching { logStore.append("SERVICE_STOPPED") }
         TrackingEventBridge.emit(
             mapOf(
@@ -306,14 +366,26 @@ class LocationTrackingService : Service(), LocationListener {
         stopForegroundAndSelf()
     }
 
+    private fun failServiceStart(message: String) {
+        reportError(message)
+        logStore.setTrackingActive(false)
+        disposeLocationEngine()
+        stopForegroundAndSelf()
+    }
+
     private fun stopForegroundAndSelf() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     private fun reportError(message: String) {
-        runCatching { logStore.append("ERROR", message = message) }
-        TrackingEventBridge.emit(mapOf("type" to "error", "message" to message))
+        runCatching { logStore.append("ERROR", message = sanitizeMessage(message)) }
+        TrackingEventBridge.emit(
+            mapOf(
+                "type" to "error",
+                "message" to sanitizeMessage(message),
+            ),
+        )
     }
 
     private fun emitServiceStatus() {
@@ -327,12 +399,13 @@ class LocationTrackingService : Service(), LocationListener {
         if (screenReceiverRegistered) {
             return
         }
-        val filter =
+        registerReceiver(
+            screenStateReceiver,
             IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_SCREEN_OFF)
-            }
-        registerReceiver(screenStateReceiver, filter)
+            },
+        )
         screenReceiverRegistered = true
     }
 
@@ -381,16 +454,22 @@ class LocationTrackingService : Service(), LocationListener {
         }
     }
 
+    private fun sanitizeMessage(value: String): String =
+        value.replace(Regex("[\\r\\n\\t]+"), " ").trim().take(240)
+
     companion object {
         const val ACTION_START =
             "com.andromind.oppo_background_gps_demo.action.START_TRACKING"
         const val ACTION_STOP =
             "com.andromind.oppo_background_gps_demo.action.STOP_TRACKING"
         const val UPDATE_INTERVAL_MS = 5_000L
-        const val MINIMUM_DISTANCE_METERS = 0f
 
         @Volatile
         var isRunning: Boolean = false
+            private set
+
+        @Volatile
+        internal var activeEngineType: LocationEngineType? = null
             private set
     }
 }

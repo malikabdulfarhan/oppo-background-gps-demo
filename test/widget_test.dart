@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:oppo_background_gps_demo/features/map/controllers/tracking_map_controller.dart';
+import 'package:oppo_background_gps_demo/features/map/models/map_display_state.dart';
+import 'package:oppo_background_gps_demo/features/map/services/tracking_map_adapter.dart';
 import 'package:oppo_background_gps_demo/features/tracking/models/location_record.dart';
 import 'package:oppo_background_gps_demo/features/tracking/screens/tracking_screen.dart';
 import 'package:oppo_background_gps_demo/features/tracking/services/tracking_models.dart';
@@ -13,7 +16,12 @@ void main() {
   ) async {
     final service = _WidgetFakeTrackingService();
     await tester.pumpWidget(
-      MaterialApp(home: TrackingScreen(trackingService: service)),
+      MaterialApp(
+        home: TrackingScreen(
+          trackingService: service,
+          trackingMapAdapter: const _WidgetFakeMapAdapter(),
+        ),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -49,6 +57,34 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await service.close();
   });
+}
+
+class _WidgetFakeMapAdapter implements TrackingMapAdapter {
+  const _WidgetFakeMapAdapter();
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Widget buildLiveMap({
+    required MapDisplayState state,
+    required TrackingMapController controller,
+    required VoidCallback onUserGesture,
+    required VoidCallback onInitializationFailed,
+  }) => const SizedBox(
+    height: 340,
+    child: Center(child: Text('Fake map adapter')),
+  );
+
+  @override
+  Widget buildReplayMap({
+    required MapDisplayState state,
+    required TrackingMapController controller,
+    required VoidCallback onInitializationFailed,
+  }) => const SizedBox(
+    height: 340,
+    child: Center(child: Text('Fake replay adapter')),
+  );
 }
 
 class _WidgetFakeTrackingService implements TrackingService {
@@ -92,6 +128,68 @@ class _WidgetFakeTrackingService implements TrackingService {
 
   @override
   Future<List<TrackingSession>> listTrackingSessions() async => const [];
+
+  @override
+  Future<TrackingSessionRecords> getSessionRecords(String sessionId) async =>
+      const TrackingSessionRecords(records: []);
+
+  @override
+  Future<bool> shareSessionLog(String sessionId) async => true;
+
+  @override
+  Future<SessionOperationResult> deleteSession(String sessionId) async =>
+      const SessionOperationResult(success: true, message: 'Deleted');
+
+  @override
+  Future<AmapConfiguration> getAmapConfiguration() async =>
+      const AmapConfiguration(
+        apiKeyConfigured: true,
+        privacyConsent: AmapPrivacyConsent.accepted,
+        sdkInitialized: false,
+        locationEngine: 'AMAP',
+      );
+
+  @override
+  Future<LocationEngineConfiguration> getLocationEngineConfiguration() async =>
+      const LocationEngineConfiguration(
+        selected: LocationEnginePreference.amap,
+        resolved: LocationEngineType.amap,
+        amapOptionAvailable: true,
+      );
+
+  @override
+  Future<LocationEngineConfiguration> setLocationEnginePreference(
+    LocationEnginePreference preference,
+  ) async => LocationEngineConfiguration(
+    selected: preference,
+    resolved: preference == LocationEnginePreference.amap
+        ? LocationEngineType.amap
+        : LocationEngineType.androidLocationManager,
+    amapOptionAvailable: true,
+  );
+
+  @override
+  Future<LocationEngineConfiguration> retryAmapInitialization() =>
+      getLocationEngineConfiguration();
+
+  @override
+  Future<AmapConfiguration> setAmapPrivacyConsent(
+    AmapPrivacyConsent consent,
+  ) async => AmapConfiguration(
+    apiKeyConfigured: true,
+    privacyConsent: consent,
+    sdkInitialized: false,
+    locationEngine: 'AMAP',
+  );
+
+  @override
+  Future<TrackingMapPreferences> getMapPreferences() async =>
+      const TrackingMapPreferences();
+
+  @override
+  Future<TrackingMapPreferences> setMapPreferences(
+    TrackingMapPreferences preferences,
+  ) async => preferences;
 
   @override
   Future<BatteryOptimizationStatus> getBatteryOptimizationStatus() async =>

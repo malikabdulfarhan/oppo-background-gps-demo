@@ -13,6 +13,8 @@ import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import com.andromind.oppo_background_gps_demo.amap.AmapPrivacyConsent
+import com.andromind.oppo_background_gps_demo.amap.AmapSdkConfiguration
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
@@ -34,7 +36,24 @@ internal class TrackingServiceController(
             "getTrackingStatus" -> result.success(buildStatus(context, logStore).toMap())
             "getCurrentSession" -> result.success(currentSessionMap())
             "getCurrentSessionRecords" -> result.success(logStore.currentLocationRecords())
-            "listTrackingSessions" -> result.success(logStore.listSessions())
+            "listTrackingSessions" ->
+                runSessionRead(result) { logStore.listSessions() }
+            "getSessionRecords" -> getSessionRecords(call, result)
+            "shareSessionLog" -> shareSessionLog(call, result)
+            "deleteSession" -> deleteSession(call, result)
+            "getAmapConfiguration" ->
+                result.success(LocationEngineConfiguration.configurationMap(context))
+            "setAmapPrivacyConsent" -> setAmapPrivacyConsent(call, result)
+            "getLocationEngineConfiguration" ->
+                result.success(LocationEngineConfiguration.configurationMap(context))
+            "setLocationEnginePreference" -> setLocationEnginePreference(call, result)
+            "retryAmapInitialization" -> {
+                AmapSdkConfiguration.resetRuntimeAttempt()
+                LocationEngineConfiguration.setFallbackReason(context, null)
+                result.success(LocationEngineConfiguration.configurationMap(context))
+            }
+            "getMapPreferences" -> result.success(AmapSdkConfiguration.mapPreferences(context))
+            "setMapPreferences" -> setMapPreferences(call, result)
             "getBatteryOptimizationStatus" -> result.success(batteryOptimizationStatus())
             "openBatteryOptimizationSettings" ->
                 result.success(openIntent(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)))
@@ -49,7 +68,8 @@ internal class TrackingServiceController(
                 )
             "openLocationSettings" ->
                 result.success(openIntent(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)))
-            "shareCurrentLog" -> result.success(shareCurrentLog())
+            "shareCurrentLog" ->
+                result.success(logStore.currentSession()?.let(::shareSessionFile) ?: false)
             else -> result.notImplemented()
         }
     }
@@ -180,14 +200,29 @@ internal class TrackingServiceController(
         }
         if (logStore.isTrackingActive()) {
             val session = logStore.currentOrCreateSession()
-            if (!LocationTrackingService.isRunning) {
-                startForegroundService()
+            try {
+                if (!LocationTrackingService.isRunning) {
+                    startForegroundService()
+                }
+                result.success(startResultMap(session, "Tracking service reconnected"))
+            } catch (error: Exception) {
+                logStore.append("ERROR", message = "Foreground service reconnect failed")
+                logStore.setTrackingActive(false)
+                result.success(
+                    mapOf(
+                        "success" to false,
+                        "isTracking" to false,
+                        "sessionId" to session.sessionId,
+                        "errorCode" to "SERVICE_START_FAILED",
+                        "message" to "Unable to reconnect the native tracking service.",
+                    ),
+                )
             }
-            result.success(startResultMap(session, "Tracking service reconnected"))
             return
         }
 
         val session = logStore.createSession()
+        logStore.setSessionLocationEngine(LocationEngineConfiguration.resolve(context).engine)
         logStore.setTrackingActive(true)
         logStore.append("SERVICE_START_REQUESTED")
         try {
@@ -285,13 +320,152 @@ internal class TrackingServiceController(
             "manufacturer" to Build.MANUFACTURER,
             "model" to Build.MODEL,
             "androidVersion" to Build.VERSION.RELEASE,
+            "buildDisplay" to Build.DISPLAY,
             "sdkInt" to Build.VERSION.SDK_INT,
             "isOppo" to Build.MANUFACTURER.equals("oppo", ignoreCase = true),
         )
     }
 
-    private fun shareCurrentLog(): Boolean {
-        val session = logStore.currentSession() ?: return false
+    private fun getSessionRecords(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val sessionId = sessionIdArgument(call)
+        if (sessionId == null) {
+            result.error("INVALID_SESSION", "A valid session ID is required.", null)
+            return
+        }
+        runSessionRead(result) { logStore.readSession(sessionId).toMap() }
+    }
+
+    private fun shareSessionLog(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val sessionId = sessionIdArgument(call)
+        val session = sessionId?.let(logStore::sessionForId)
+        result.success(session?.let(::shareSessionFile) ?: false)
+    }
+
+    private fun deleteSession(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val sessionId = sessionIdArgument(call)
+        if (sessionId == null) {
+            result.success(
+                SessionOperationResult(false, "A valid session ID is required.").toMap(),
+            )
+            return
+        }
+        result.success(logStore.deleteSession(sessionId).toMap())
+    }
+
+    private fun setAmapPrivacyConsent(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val consent =
+            when (call.argument<String>("decision")) {
+                AmapPrivacyConsent.ACCEPTED.wireValue -> AmapPrivacyConsent.ACCEPTED
+                AmapPrivacyConsent.DECLINED.wireValue -> AmapPrivacyConsent.DECLINED
+                AmapPrivacyConsent.NOT_SELECTED.wireValue -> AmapPrivacyConsent.NOT_SELECTED
+                else -> {
+                    result.error("INVALID_CONSENT", "Unknown privacy-consent decision.", null)
+                    return
+                }
+            }
+        if (
+            consent != AmapPrivacyConsent.ACCEPTED &&
+            (logStore.isTrackingActive() || LocationTrackingService.isRunning) &&
+            (
+                LocationTrackingService.activeEngineType == LocationEngineType.AMAP ||
+                    logStore.currentLocationEngine() == LocationEngineType.AMAP.wireValue
+            )
+        ) {
+            result.error(
+                "TRACKING_ACTIVE",
+                "Stop tracking before revoking AMap privacy consent.",
+                null,
+            )
+            return
+        }
+        AmapSdkConfiguration.setPrivacyConsent(context, consent)
+        result.success(LocationEngineConfiguration.configurationMap(context))
+    }
+
+    private fun setLocationEnginePreference(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        if (logStore.isTrackingActive() || LocationTrackingService.isRunning) {
+            result.error(
+                "TRACKING_ACTIVE",
+                "Stop tracking before changing the location engine.",
+                null,
+            )
+            return
+        }
+        val preference =
+            LocationEnginePreference.entries.firstOrNull {
+                it.wireValue == call.argument<String>("preference")
+            }
+        if (preference == null) {
+            result.error("INVALID_ENGINE", "Unknown location-engine preference.", null)
+            return
+        }
+        if (
+            preference == LocationEnginePreference.AMAP &&
+            !AmapSdkConfiguration.isKeyConfigured(context)
+        ) {
+            result.error(
+                "ENGINE_UNAVAILABLE",
+                "A valid AMap Android SDK key is required.",
+                null,
+            )
+            return
+        }
+        LocationEngineConfiguration.setSelectedPreference(context, preference)
+        LocationEngineConfiguration.setFallbackReason(context, null)
+        result.success(LocationEngineConfiguration.configurationMap(context))
+    }
+
+    private fun setMapPreferences(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val arguments = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+        result.success(AmapSdkConfiguration.updateMapPreferences(context, arguments))
+    }
+
+    private fun sessionIdArgument(call: MethodCall): String? =
+        call.argument<String>("sessionId")?.takeIf(TrackingLogStore::isSafeSessionId)
+
+    private fun runSessionRead(
+        result: MethodChannel.Result,
+        operation: () -> Any?,
+    ) {
+        Thread(
+            {
+                val value = runCatching(operation)
+                activity.runOnUiThread {
+                    value.fold(
+                        onSuccess = result::success,
+                        onFailure = {
+                            result.error(
+                                "SESSION_READ_FAILED",
+                                "The selected tracking session could not be read.",
+                                null,
+                            )
+                        },
+                    )
+                }
+            },
+            "tracking-session-reader",
+        ).start()
+    }
+
+    private fun shareSessionFile(session: TrackingSessionFile): Boolean {
         if (!session.file.exists()) {
             return false
         }
@@ -353,6 +527,20 @@ internal class TrackingServiceController(
                     ) == PackageManager.PERMISSION_GRANTED
             val keyguardManager =
                 context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            val amapKeyConfigured = AmapSdkConfiguration.isKeyConfigured(context)
+            val engineConfiguration = LocationEngineConfiguration.configurationMap(context)
+            val hasLocationPermission =
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ) == PackageManager.PERMISSION_GRANTED
+            val activeEngine =
+                LocationTrackingService.activeEngineType?.wireValue
+                    ?: logStore.currentLocationEngine()
             return TrackingStatus(
                 isTracking = logStore.isTrackingActive(),
                 serviceRunning = LocationTrackingService.isRunning,
@@ -362,6 +550,29 @@ internal class TrackingServiceController(
                 currentProvider = logStore.currentProvider(),
                 screenState = if (keyguardManager.isKeyguardLocked) "LOCKED" else "UNLOCKED",
                 notificationPermissionGranted = notificationGranted,
+                amapApiKeyConfigured = amapKeyConfigured,
+                amapPrivacyConsent = AmapSdkConfiguration.privacyConsent(context).wireValue,
+                amapSdkInitialized = AmapSdkConfiguration.isSdkInitialized(context),
+                locationEngine =
+                    activeEngine
+                        ?: engineConfiguration["resolvedLocationEngine"] as? String
+                        ?: LocationEngineType.ANDROID_LOCATION_MANAGER.wireValue,
+                lastAmapLocationType = logStore.lastAmapLocationType(),
+                lastAmapErrorCode = logStore.lastAmapErrorCode(),
+                lastAmapErrorMessage = logStore.lastAmapErrorMessage(),
+                satelliteCount = logStore.satelliteCount(),
+                gpsAccuracyStatus = logStore.gpsAccuracyStatus(),
+                coordinateSystem = logStore.coordinateSystem(),
+                selectedLocationEngine =
+                    engineConfiguration["selectedLocationEngine"] as? String ?: "AUTOMATIC",
+                activeLocationEngine = activeEngine,
+                fallbackReason = engineConfiguration["fallbackReason"] as? String,
+                amapSdkCompileIntegration = true,
+                amapRuntimeState =
+                    AmapSdkConfiguration.runtimeState().wireValue,
+                amapRuntimeVerification =
+                    AmapSdkConfiguration.runtimeVerification(context),
+                locationPermissionGranted = hasLocationPermission,
             )
         }
 
@@ -373,7 +584,7 @@ internal class TrackingServiceController(
                 android.location.LocationManager.NETWORK_PROVIDER,
             ).any { provider ->
                 runCatching {
-                    manager.getProvider(provider) != null && manager.isProviderEnabled(provider)
+                    provider in manager.allProviders && manager.isProviderEnabled(provider)
                 }.getOrDefault(false)
             }
         }

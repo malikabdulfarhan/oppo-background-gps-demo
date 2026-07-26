@@ -45,6 +45,14 @@ class ServiceStatusCard extends StatelessWidget {
               value: status.serviceRunning ? 'Yes' : 'No',
             ),
             _StatusRow(
+              label: 'Location engine',
+              value:
+                  status.activeLocationEngine?.label ??
+                  status.selectedLocationEngine.label,
+            ),
+            if (status.fallbackReason != null)
+              _StatusRow(label: 'Fallback', value: status.fallbackReason!),
+            _StatusRow(
               label: 'Last update',
               value: _formatDate(status.lastLocationTimestamp),
             ),

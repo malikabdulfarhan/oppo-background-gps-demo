@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../analytics/route_metrics.dart';
+import '../analytics/route_metrics_calculator.dart';
 import '../models/location_record.dart';
 import '../services/android_tracking_service.dart';
 import '../services/tracking_models.dart';
@@ -17,6 +19,7 @@ class TrackingController extends ChangeNotifier {
   static const updateInterval = Duration(seconds: 5);
 
   final TrackingService _trackingService;
+  final List<LocationRecord> _allRecords = [];
   final List<LocationRecord> _records = [];
   final List<LocationRecord> _routePoints = [];
   final Set<String> _knownRecordIds = {};
@@ -27,6 +30,10 @@ class TrackingController extends ChangeNotifier {
   TrackingServiceStatus _serviceStatus = const TrackingServiceStatus.stopped();
   BatteryOptimizationStatus _batteryStatus =
       const BatteryOptimizationStatus.unknown();
+  AmapConfiguration _amapConfiguration = const AmapConfiguration.unavailable();
+  LocationEngineConfiguration _locationEngineConfiguration =
+      const LocationEngineConfiguration();
+  TrackingMapPreferences _mapPreferences = const TrackingMapPreferences();
   bool _isInitializing = false;
   bool _isInitialized = false;
   bool _isStarting = false;
@@ -52,8 +59,23 @@ class TrackingController extends ChangeNotifier {
   TrackingRecoveryAction get recoveryAction => _recoveryAction;
   TrackingServiceStatus get serviceStatus => _serviceStatus;
   BatteryOptimizationStatus get batteryStatus => _batteryStatus;
+  AmapConfiguration get amapConfiguration => _amapConfiguration;
+  LocationEngineConfiguration get locationEngineConfiguration =>
+      _locationEngineConfiguration;
+  bool get shouldUseAmapMap =>
+      _locationEngineConfiguration.shouldUseAmapMap &&
+      _amapConfiguration.canUseAmap &&
+      _amapConfiguration.runtimeState != AmapRuntimeState.failed;
+  TrackingMapPreferences get mapPreferences => _mapPreferences;
+  RouteMetrics get routeMetrics =>
+      const RouteMetricsCalculator().calculate(_knownRecordsInTimeOrder);
   List<LocationRecord> get records => List.unmodifiable(_records);
   List<LocationRecord> get routePoints => List.unmodifiable(_routePoints);
+  List<LocationRecord> get _knownRecordsInTimeOrder {
+    final values = [..._allRecords];
+    values.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return values;
+  }
 
   Future<void> initialize() async {
     if (_isInitializing || _isInitialized || _isDisposed) {
@@ -85,6 +107,9 @@ class TrackingController extends ChangeNotifier {
     final results = await Future.wait<Object>([
       _trackingService.getStatus(),
       _trackingService.getBatteryOptimizationStatus(),
+      _trackingService.getAmapConfiguration(),
+      _trackingService.getLocationEngineConfiguration(),
+      _trackingService.getMapPreferences(),
       if (restoreRecords) _trackingService.getCurrentSessionRecords(),
     ]);
     if (_isDisposed) {
@@ -92,6 +117,9 @@ class TrackingController extends ChangeNotifier {
     }
     _serviceStatus = results[0] as TrackingServiceStatus;
     _batteryStatus = results[1] as BatteryOptimizationStatus;
+    _amapConfiguration = results[2] as AmapConfiguration;
+    _locationEngineConfiguration = results[3] as LocationEngineConfiguration;
+    _mapPreferences = results[4] as TrackingMapPreferences;
     if (_serviceStatus.isTracking && !_serviceStatus.serviceRunning) {
       final recoveryResult = await _trackingService.startTracking();
       if (!_isDisposed) {
@@ -109,7 +137,7 @@ class TrackingController extends ChangeNotifier {
       }
     }
     if (restoreRecords) {
-      _mergePersistedRecords(results[2] as List<LocationRecord>);
+      _mergePersistedRecords(results[5] as List<LocationRecord>);
     }
     _syncNotificationWarning();
     notifyListeners();
@@ -125,7 +153,6 @@ class TrackingController extends ChangeNotifier {
         return;
       }
     }
-
     final requestId = ++_startRequestId;
     _isStarting = true;
     _errorMessage = null;
@@ -162,6 +189,7 @@ class TrackingController extends ChangeNotifier {
         sessionId: result.sessionId,
         notificationPermissionGranted: result.notificationPermissionGranted,
       );
+      await _refreshEngineConfiguration();
       _syncNotificationWarning();
     } on PlatformException catch (error, stackTrace) {
       debugPrint(
@@ -214,6 +242,98 @@ class TrackingController extends ChangeNotifier {
       _trackingService.openBatteryOptimizationSettings();
 
   Future<bool> shareCurrentLog() => _trackingService.shareCurrentLog();
+
+  Future<List<TrackingSession>> listTrackingSessions() =>
+      _trackingService.listTrackingSessions();
+
+  Future<TrackingSessionRecords> getSessionRecords(String sessionId) =>
+      _trackingService.getSessionRecords(sessionId);
+
+  Future<bool> shareSessionLog(String sessionId) =>
+      _trackingService.shareSessionLog(sessionId);
+
+  Future<SessionOperationResult> deleteSession(String sessionId) =>
+      _trackingService.deleteSession(sessionId);
+
+  Future<void> setAmapPrivacyConsent(AmapPrivacyConsent consent) async {
+    _errorMessage = null;
+    try {
+      _amapConfiguration = await _trackingService.setAmapPrivacyConsent(
+        consent,
+      );
+      await _refreshEngineConfiguration();
+    } on PlatformException catch (error) {
+      _setError(
+        error.code == 'TRACKING_ACTIVE'
+            ? 'Stop tracking before revoking AMap privacy consent.'
+            : 'Unable to update AMap privacy consent.',
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<void> setLocationEnginePreference(
+    LocationEnginePreference preference,
+  ) async {
+    if (isTracking) {
+      _setError('Stop tracking before changing the location engine.');
+      notifyListeners();
+      return;
+    }
+    _errorMessage = null;
+    try {
+      _locationEngineConfiguration = await _trackingService
+          .setLocationEnginePreference(preference);
+    } on PlatformException catch (error) {
+      _setError(
+        error.code == 'ENGINE_UNAVAILABLE'
+            ? 'AMap is unavailable. Add a valid API key and accept AMap privacy consent, or use Android GPS Demo Mode.'
+            : 'Unable to change the location engine.',
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<void> retryAmapInitialization() async {
+    _errorMessage = null;
+    try {
+      _locationEngineConfiguration = await _trackingService
+          .retryAmapInitialization();
+      _amapConfiguration = await _trackingService.getAmapConfiguration();
+    } on Object catch (error) {
+      debugPrint('Unable to retry AMap initialization: $error');
+      _setError('Unable to retry AMap initialization.');
+    }
+    notifyListeners();
+  }
+
+  Future<void> handleAmapInitializationFailure() async {
+    try {
+      _amapConfiguration = await _trackingService.getAmapConfiguration();
+      await _refreshEngineConfiguration();
+    } on Object catch (error) {
+      debugPrint('Unable to refresh AMap fallback state: $error');
+    }
+    if (!_isDisposed) {
+      notifyListeners();
+    }
+  }
+
+  Future<void> _refreshEngineConfiguration() async {
+    _locationEngineConfiguration = await _trackingService
+        .getLocationEngineConfiguration();
+  }
+
+  Future<void> updateMapPreferences(TrackingMapPreferences preferences) async {
+    _mapPreferences = preferences;
+    notifyListeners();
+    try {
+      _mapPreferences = await _trackingService.setMapPreferences(preferences);
+    } on Object catch (error) {
+      debugPrint('Unable to persist map preferences: $error');
+    }
+    notifyListeners();
+  }
 
   void setFollowLocation(bool value) {
     if (_followLocation == value) {
@@ -330,6 +450,7 @@ class TrackingController extends ChangeNotifier {
     }
     _latestLocation = record;
     _locationSampleCount += 1;
+    _allRecords.add(record);
     if (!_hiddenLogIds.contains(record.identity)) {
       _records.insert(0, record);
     }
@@ -385,6 +506,8 @@ class TrackingController extends ChangeNotifier {
     return switch (error.code) {
       'PERMISSION_REQUEST_ACTIVE' =>
         'A permission request is already open. Complete it and try again.',
+      'TRACKING_ACTIVE' =>
+        'Stop tracking before changing the AMap privacy setting.',
       _ => 'Android could not start the native tracking service.',
     };
   }

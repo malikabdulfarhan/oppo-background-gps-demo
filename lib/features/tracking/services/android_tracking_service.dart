@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:flutter/services.dart';
 
 import '../models/location_record.dart';
@@ -71,6 +73,87 @@ class AndroidTrackingService implements TrackingService {
   }
 
   @override
+  Future<TrackingSessionRecords> getSessionRecords(String sessionId) async {
+    final value = await _control.invokeMethod<Object?>('getSessionRecords', {
+      'sessionId': sessionId,
+    });
+    return Isolate.run(() => TrackingSessionRecords.fromMap(value));
+  }
+
+  @override
+  Future<bool> shareSessionLog(String sessionId) =>
+      _invokeBoolean('shareSessionLog', {'sessionId': sessionId});
+
+  @override
+  Future<SessionOperationResult> deleteSession(String sessionId) async {
+    final value = await _control.invokeMethod<Object?>('deleteSession', {
+      'sessionId': sessionId,
+    });
+    return SessionOperationResult.fromMap(value);
+  }
+
+  @override
+  Future<AmapConfiguration> getAmapConfiguration() async {
+    final value = await _control.invokeMethod<Object?>('getAmapConfiguration');
+    return AmapConfiguration.fromMap(value);
+  }
+
+  @override
+  Future<LocationEngineConfiguration> getLocationEngineConfiguration() async {
+    final value = await _control.invokeMethod<Object?>(
+      'getLocationEngineConfiguration',
+    );
+    return LocationEngineConfiguration.fromMap(value);
+  }
+
+  @override
+  Future<LocationEngineConfiguration> setLocationEnginePreference(
+    LocationEnginePreference preference,
+  ) async {
+    final value = await _control.invokeMethod<Object?>(
+      'setLocationEnginePreference',
+      {'preference': preference.wireValue},
+    );
+    return LocationEngineConfiguration.fromMap(value);
+  }
+
+  @override
+  Future<LocationEngineConfiguration> retryAmapInitialization() async {
+    final value = await _control.invokeMethod<Object?>(
+      'retryAmapInitialization',
+    );
+    return LocationEngineConfiguration.fromMap(value);
+  }
+
+  @override
+  Future<AmapConfiguration> setAmapPrivacyConsent(
+    AmapPrivacyConsent consent,
+  ) async {
+    final value = await _control.invokeMethod<Object?>(
+      'setAmapPrivacyConsent',
+      {'decision': consent.wireValue},
+    );
+    return AmapConfiguration.fromMap(value);
+  }
+
+  @override
+  Future<TrackingMapPreferences> getMapPreferences() async {
+    final value = await _control.invokeMethod<Object?>('getMapPreferences');
+    return TrackingMapPreferences.fromMap(value);
+  }
+
+  @override
+  Future<TrackingMapPreferences> setMapPreferences(
+    TrackingMapPreferences preferences,
+  ) async {
+    final value = await _control.invokeMethod<Object?>(
+      'setMapPreferences',
+      preferences.toMap(),
+    );
+    return TrackingMapPreferences.fromMap(value);
+  }
+
+  @override
   Future<BatteryOptimizationStatus> getBatteryOptimizationStatus() async {
     final value = await _control.invokeMethod<Object?>(
       'getBatteryOptimizationStatus',
@@ -91,6 +174,8 @@ class AndroidTrackingService implements TrackingService {
   @override
   Future<bool> shareCurrentLog() => _invokeBoolean('shareCurrentLog');
 
-  Future<bool> _invokeBoolean(String method) async =>
-      await _control.invokeMethod<bool>(method) ?? false;
+  Future<bool> _invokeBoolean(
+    String method, [
+    Map<String, Object?>? arguments,
+  ]) async => await _control.invokeMethod<bool>(method, arguments) ?? false;
 }

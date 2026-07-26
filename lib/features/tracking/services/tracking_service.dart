@@ -18,6 +18,30 @@ abstract interface class TrackingService {
 
   Future<List<TrackingSession>> listTrackingSessions();
 
+  Future<TrackingSessionRecords> getSessionRecords(String sessionId);
+
+  Future<bool> shareSessionLog(String sessionId);
+
+  Future<SessionOperationResult> deleteSession(String sessionId);
+
+  Future<AmapConfiguration> getAmapConfiguration();
+
+  Future<LocationEngineConfiguration> getLocationEngineConfiguration();
+
+  Future<LocationEngineConfiguration> setLocationEnginePreference(
+    LocationEnginePreference preference,
+  );
+
+  Future<LocationEngineConfiguration> retryAmapInitialization();
+
+  Future<AmapConfiguration> setAmapPrivacyConsent(AmapPrivacyConsent consent);
+
+  Future<TrackingMapPreferences> getMapPreferences();
+
+  Future<TrackingMapPreferences> setMapPreferences(
+    TrackingMapPreferences preferences,
+  );
+
   Future<BatteryOptimizationStatus> getBatteryOptimizationStatus();
 
   Future<bool> openBatteryOptimizationSettings();
