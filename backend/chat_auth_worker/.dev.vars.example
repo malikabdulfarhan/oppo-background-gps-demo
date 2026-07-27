@@ -1,0 +1,4 @@
+TENCENT_IM_SDK_APP_ID=1234567890
+TENCENT_IM_SDK_SECRET_KEY=replace_only_in_local_dev_vars
+DEMO_PIN_PEPPER=replace_with_32_random_bytes_encoded_as_base64url
+DEMO_USERS_JSON={"user_a":{"algorithm":"hmac-sha256-v1","salt":"base64url-salt","pinHash":"base64url-hmac-verifier"}}

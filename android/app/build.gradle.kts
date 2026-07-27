@@ -30,6 +30,7 @@ android {
         applicationId = "com.andromind.oppo_background_gps_demo"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // Flutter's API 24 baseline satisfies secure storage's API 23 minimum.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

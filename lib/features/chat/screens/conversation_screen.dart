@@ -8,6 +8,7 @@ import '../models/chat_configuration.dart';
 import '../models/chat_conversation.dart';
 import '../models/chat_message.dart';
 import '../models/tracking_share_summary.dart';
+import '../services/chat_call_service.dart';
 import '../services/chat_service.dart';
 import '../widgets/chat_message_bubble.dart';
 import '../widgets/message_composer.dart';
@@ -34,6 +35,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   StreamSubscription<ChatEvent>? _subscription;
   bool _loading = true;
   bool _loadingEarlier = false;
+  bool _startingCall = false;
   String? _error;
 
   @override
@@ -112,6 +114,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  Future<void> _startCall(ChatCallMediaType mediaType) async {
+    if (_startingCall) return;
+    setState(() => _startingCall = true);
+    final recipient = widget.conversation.participant.userId;
+    final result = mediaType == ChatCallMediaType.audio
+        ? await widget.controller.startAudioCall(recipient)
+        : await widget.controller.startVideoCall(recipient);
+    if (!mounted) return;
+    setState(() => _startingCall = false);
+    if (!result.success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message ?? 'Unable to start the call.'),
+          showCloseIcon: true,
+        ),
+      );
+    }
+  }
+
   Future<void> _shareTrackingStatus() async {
     final record = widget.trackingController.latestLocation;
     if (record == null) {
@@ -176,6 +197,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
     appBar: AppBar(
       title: Text(widget.conversation.participant.title),
       actions: [
+        if (widget.controller.providerType == ChatProviderType.tencentCloud &&
+            widget.controller.isTencentLoggedIn) ...[
+          if (_startingCall)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 14),
+              child: Center(
+                child: SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          else ...[
+            IconButton(
+              tooltip: 'Start audio call',
+              onPressed: () => _startCall(ChatCallMediaType.audio),
+              icon: const Icon(Icons.call_outlined),
+            ),
+            IconButton(
+              tooltip: 'Start video call',
+              onPressed: () => _startCall(ChatCallMediaType.video),
+              icon: const Icon(Icons.videocam_outlined),
+            ),
+          ],
+        ],
         IconButton(
           tooltip: 'Share current tracking status',
           onPressed: _shareTrackingStatus,

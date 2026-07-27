@@ -1,0 +1,14 @@
+name = "oppo-gps-chat-auth"
+main = "src/index.js"
+compatibility_date = "2026-07-26"
+
+# Replace this placeholder after creating the KV namespace:
+#   npx wrangler kv namespace create CHAT_AUTH_KV
+[[kv_namespaces]]
+binding = "CHAT_AUTH_KV"
+id = "cd13680b9628467ea58cf51cf275f386"
+
+[vars]
+USER_SIG_TTL_SECONDS = "86400"
+REFRESH_TOKEN_TTL_SECONDS = "2592000"
+ALLOWED_ORIGINS = ""

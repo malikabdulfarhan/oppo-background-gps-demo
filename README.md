@@ -5,6 +5,42 @@ keyless Android LocationManager GPS and optional AMap. It includes foreground
 collection, app-private CSV logging, session history, analytics, and route
 replay.
 
+## Implemented functionality
+
+- Material 3 interface with Live, Sessions, Chat, Diagnostics, and Settings
+  destinations
+- Native Android foreground-service GPS collection through LocationManager
+- Optional native AMap location and map rendering with a keyless fallback mode
+- Persistent app-private CSV sessions, route statistics, history, replay,
+  sharing, and deletion
+- Live route rendering, follow/recenter controls, large-route simplification,
+  and scrollable location samples
+- Runtime permission, GPS settings, foreground-service, notification, engine,
+  and ColorOS diagnostics
+- Local chat demonstration plus real Tencent one-to-one text chat
+- Cloudflare Worker authentication, secure refresh-token storage, and
+  automatic Tencent sign-in without embedding the SDKSecretKey
+- Foreground Tencent one-to-one audio and video calls with incoming/outgoing
+  call UI and safe error recovery
+- Unit, widget, Worker, and native Android tests for the implemented layers
+
+## Phase 6 Tencent audio/video calls
+
+Phase 6 integrates the official `tencent_calls_uikit` package for foreground
+one-to-one audio and video calls. After secure Chat sign-in, conversation
+screens show phone and camera actions. Tencent's complete call UI handles
+outgoing invitations, incoming calls, accept, reject, hang-up, microphone,
+speaker, and camera controls.
+
+The Call product must be activated separately for the same SDKAppID. Until it
+is activated, text chat continues working and a call attempt displays a safe
+activation message. The SDKSecretKey remains only in the Cloudflare Worker;
+TUICallKit receives the same temporary UserSig already used for Chat.
+
+This phase validates calls while both apps are active. Killed-process incoming
+calls and vendor offline push are not claimed. See
+[Phase 6 calling demo](docs/phase-6-calling-demo.md).
+
 ## Phase 5 Tencent Cloud Chat
 
 Phase 5 adds a fifth **Chat** destination without changing ownership of GPS
@@ -19,37 +55,52 @@ Two provider modes are available:
 - **Tencent Cloud Chat Mode** uses the official
   `tencent_cloud_chat_sdk` package for C2C text conversations, history,
   sending, advanced incoming-message callbacks, unread state, and connection
-  events. It activates only after an explicit login with a configured SDKAppID,
-  User ID, and temporary UserSig.
+  events. A demo account is entered once; later app launches restore the
+  session automatically through the authentication backend.
 
-Configure only the public SDKAppID at build time:
+Configure the public SDKAppID and deployed HTTPS authentication endpoint at
+build time:
 
 ```powershell
-flutter run --dart-define=TENCENT_IM_SDK_APP_ID=1234567890
+flutter run `
+  --dart-define=TENCENT_IM_SDK_APP_ID=1234567890 `
+  --dart-define=TENCENT_CHAT_AUTH_BASE_URL=https://your-worker.workers.dev/
 ```
 
-The number above is a placeholder. Enter the User ID and temporary UserSig at
-runtime. UserSig remains in memory only and is cleared after the login attempt
-or logout. Never put the Tencent SDKSecretKey in this repository or generate a
-production UserSig in the app. The production flow is:
+The values above are placeholders. The first login exchanges a demo User ID and
+PIN for a short-lived UserSig and a revocable refresh token. Only the refresh
+token is retained in Android secure storage; the PIN is discarded after the
+request and UserSig stays in memory. Debug builds retain a manual UserSig login
+for troubleshooting, but release builds do not show it.
+
+Never put the Tencent SDKSecretKey, PIN, UserSig, refresh token, or a real
+credential in this repository. The implemented demo flow is:
 
 ```text
-Mobile app -> authenticated application backend
-           -> backend generates temporary UserSig
-           -> mobile app logs in to Tencent Cloud Chat
+First login:
+Mobile app -> Cloudflare Worker verifies demo User ID + salted PIN hash
+           -> Worker generates temporary UserSig using its secret
+           -> app stores only an opaque refresh token securely
+
+Later launches:
+Mobile app -> rotates saved refresh token through Worker
+           -> receives a fresh UserSig -> logs in automatically
 ```
 
 Inside a conversation, the user may explicitly share the latest already
 available GPS status after confirming a privacy warning. Chat never starts
 tracking and never sends locations automatically or uploads a CSV session.
 
-Scope is one-to-one text only. Images, files, audio, calls, group chat, and
-Tencent vendor offline push are intentionally excluded. OPPO/ColorOS
-locked-screen and killed-process chat notifications are not configured.
+Text messaging remains one-to-one only. Images, files, voice messages, group
+chat, and Tencent vendor offline push are intentionally excluded. Phase 6 adds
+foreground one-to-one audio/video calls, but OPPO/ColorOS locked-screen and
+killed-process call notifications are not configured.
 Cloud verification still requires a real Tencent application and two test
 users. See [Tencent setup](docs/tencent-im-setup.md),
 [Phase 5 demo](docs/phase-5-chat-demo.md), and
-[UserSig security](docs/tencent-usersig-security.md).
+[UserSig security](docs/tencent-usersig-security.md). Deployment of the free
+demo Worker is covered in
+[Chat authentication backend setup](docs/chat-auth-backend-setup.md).
 
 ## Phase 4 architecture
 
@@ -213,7 +264,9 @@ routes can still be offset if their historical coordinate metadata is wrong.
 ## Android permissions
 
 The manifest includes fine/coarse location, foreground-location service,
-notification, internet, network-state, and Wi-Fi-state permissions.
+notification, internet, network-state, Wi-Fi-state, microphone, camera, audio
+settings, Bluetooth headset, wake-lock, vibration, and the foreground-service
+media permissions required by Tencent Calls.
 `ACCESS_BACKGROUND_LOCATION` is intentionally not requested. The foreground
 service is started from the visible activity.
 
@@ -222,13 +275,17 @@ service is started from the visible activity.
 ```powershell
 flutter pub get
 flutter devices
-flutter run -d <device-id>
+flutter run -d <device-id> `
+  --dart-define=TENCENT_IM_SDK_APP_ID=20045530 `
+  --dart-define=TENCENT_CHAT_AUTH_BASE_URL=https://your-worker.workers.dev/
 ```
 
-For keyless testing, select Automatic or Android GPS Demo, grant precise
+Omit the two Tencent defines for the credential-free local Chat demo. For
+keyless map testing, select Automatic or Android GPS Demo, grant precise
 location and notification permission, enable GPS, then press **Start
 Tracking**. AMap-specific testing additionally requires a valid key and
-accepted AMap privacy consent.
+accepted AMap privacy consent. Cloud calls additionally require the Call
+product or trial to be active for the same SDKAppID.
 Outdoor testing generally produces a faster and more accurate first fix.
 
 Follow [docs/phase-4-test-plan.md](docs/phase-4-test-plan.md) and preserve
@@ -256,7 +313,7 @@ signing data, and absolute app-private paths.
   battery, thermal, force-stop, permission, or vendor policy conditions.
   `START_STICKY` requests recreation; it is not a survival guarantee.
 - No undocumented OPPO/ColorOS intent or boot auto-start is included. Tencent
-  OPPO offline push is deferred to Phase 6.
+  OPPO offline push is deferred to Phase 7.
 - Hardware behavior must be recorded on the target phone; a successful build
   is not proof of locked-screen callback continuity.
 
@@ -271,6 +328,8 @@ flutter build apk --debug
 cd android
 .\gradlew.bat test
 .\gradlew.bat assembleDebug
+cd ..\backend\chat_auth_worker
+npm test
 ```
 
 Official references: [AMap Android Studio setup](https://lbs.amap.com/api/android-sdk/guide/create-project/android-studio-create-project),

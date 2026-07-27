@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:tencent_calls_uikit/tencent_calls_uikit.dart';
 
 import 'features/tracking/screens/tracking_screen.dart';
 
@@ -16,6 +17,8 @@ class MainApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Map Track Demo',
+      localizationsDelegates: const [AtomicLocalizations.delegate],
+      navigatorObservers: [TUICallKit.navigatorObserver],
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(

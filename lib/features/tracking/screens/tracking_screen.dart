@@ -3,9 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../chat/controllers/chat_controller.dart';
+import '../../chat/models/chat_auth_configuration.dart';
 import '../../chat/models/chat_configuration.dart';
 import '../../chat/screens/chat_home_screen.dart';
+import '../../chat/services/chat_auth_coordinator.dart';
+import '../../chat/services/chat_auth_factory.dart';
+import '../../chat/services/chat_call_service.dart';
 import '../../chat/services/chat_service.dart';
+import '../../chat/services/tencent_call_service.dart';
 import '../../map/models/map_display_state.dart';
 import '../../map/services/tracking_map_adapter.dart';
 import '../controllers/tracking_controller.dart';
@@ -23,8 +28,11 @@ class TrackingScreen extends StatefulWidget {
     this.mapBuilder,
     this.trackingMapAdapter,
     this.chatConfiguration = const ChatConfiguration(),
+    this.chatAuthConfiguration = const ChatAuthConfiguration(),
+    this.chatAuthCoordinator,
     this.localChatService,
     this.tencentChatService,
+    this.chatCallService,
     super.key,
   });
 
@@ -32,8 +40,11 @@ class TrackingScreen extends StatefulWidget {
   final Widget Function(MapDisplayState state)? mapBuilder;
   final TrackingMapAdapter? trackingMapAdapter;
   final ChatConfiguration chatConfiguration;
+  final ChatAuthConfiguration chatAuthConfiguration;
+  final ChatAuthCoordinator? chatAuthCoordinator;
   final ChatService? localChatService;
   final ChatService? tencentChatService;
+  final ChatCallService? chatCallService;
 
   @override
   State<TrackingScreen> createState() => _TrackingScreenState();
@@ -52,10 +63,15 @@ class _TrackingScreenState extends State<TrackingScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controller = TrackingController(trackingService: widget.trackingService);
+    final chatAuthCoordinator =
+        widget.chatAuthCoordinator ??
+        const ChatAuthFactory().create(widget.chatAuthConfiguration);
     _chatController = ChatController(
       configuration: widget.chatConfiguration,
       localService: widget.localChatService,
       tencentService: widget.tencentChatService,
+      authCoordinator: chatAuthCoordinator,
+      callService: widget.chatCallService ?? TencentCallService(),
     );
     unawaited(_initialize());
   }

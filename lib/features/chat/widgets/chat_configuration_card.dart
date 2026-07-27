@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 class ChatConfigurationCard extends StatelessWidget {
   const ChatConfigurationCard({
     required this.sdkAppIdConfigured,
+    this.secureAuthConfigured = false,
     required this.onOpenLogin,
     super.key,
   });
 
   final bool sdkAppIdConfigured;
+  final bool secureAuthConfigured;
   final VoidCallback onOpenLogin;
 
   @override
@@ -28,8 +30,12 @@ class ChatConfigurationCard extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             sdkAppIdConfigured
-                ? 'Enter a User ID and temporary UserSig to connect.'
-                : 'A Tencent SDKAppID, UserID, and temporary UserSig are '
+                ? secureAuthConfigured
+                      ? 'Sign in once with your demo account. Future launches '
+                            'restore Chat automatically.'
+                      : 'Secure automatic sign-in is not configured. Debug '
+                            'builds can use a temporary UserSig.'
+                : 'A Tencent SDKAppID and secure authentication backend are '
                       'required for real cloud messaging. Local Chat Demo '
                       'Mode remains available.',
           ),
@@ -37,7 +43,9 @@ class ChatConfigurationCard extends StatelessWidget {
           OutlinedButton.icon(
             onPressed: onOpenLogin,
             icon: const Icon(Icons.cloud_outlined),
-            label: const Text('Tencent login'),
+            label: Text(
+              secureAuthConfigured ? 'Sign in to Tencent' : 'Chat setup',
+            ),
           ),
         ],
       ),

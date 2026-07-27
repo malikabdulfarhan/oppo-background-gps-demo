@@ -18,17 +18,23 @@
 
 ## Real Tencent demonstration
 
-Use two different test users and temporary UserSigs on two devices. Verify C2C
-send/receive, unread and read changes, reconnect behavior, invalid/expired
-UserSig handling, and kicked-offline state. Keep GPS active during the test and
-confirm chat does not alter its service or notification.
+Use two different test users on two devices. Sign in once with each demo User
+ID and PIN, then verify automatic sign-in, C2C send/receive, unread and read
+changes, reconnect behavior, expired-session refresh, and kicked-offline
+state. Keep GPS active during the test and confirm chat does not alter its
+service or notification.
 
 Cloud messaging is pending until this two-user test succeeds. Offline push is
 not part of Phase 5.
 
 ## Phase 6
 
-Phase 6 is **Tencent IM offline push for OPPO/ColorOS**. It may require Tencent
+Phase 6 adds foreground one-to-one audio/video calls with TUICallKit. See
+[phase-6-calling-demo.md](phase-6-calling-demo.md).
+
+## Phase 7
+
+Phase 7 is **Tencent IM offline push for OPPO/ColorOS**. It may require Tencent
 Chat application push configuration, an OPPO developer application and vendor
 credentials, Tencent push certificates, notification click routing, and
 foreground, background, locked-screen, and killed-process tests.

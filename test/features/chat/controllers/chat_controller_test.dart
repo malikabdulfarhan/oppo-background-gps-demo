@@ -4,8 +4,10 @@ import 'package:oppo_background_gps_demo/features/chat/models/chat_configuration
 import 'package:oppo_background_gps_demo/features/chat/models/chat_connection_state.dart';
 import 'package:oppo_background_gps_demo/features/chat/models/chat_conversation.dart';
 import 'package:oppo_background_gps_demo/features/chat/models/chat_user.dart';
+import 'package:oppo_background_gps_demo/features/chat/services/chat_call_service.dart';
 import 'package:oppo_background_gps_demo/features/chat/services/chat_service.dart';
 
+import '../fake_chat_call_service.dart';
 import '../fake_chat_service.dart';
 
 void main() {
@@ -201,4 +203,77 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'audio and video calls share the secure Tencent login session',
+    () async {
+      final local = FakeChatService(providerType: ChatProviderType.localDemo);
+      final tencent = FakeChatService(
+        providerType: ChatProviderType.tencentCloud,
+      );
+      final calls = FakeChatCallService();
+      final controller = ChatController(
+        configuration: const ChatConfiguration(sdkAppId: 20045530),
+        localService: local,
+        tencentService: tencent,
+        callService: calls,
+      );
+      await controller.initialize();
+
+      final login = await controller.loginTencent(
+        userId: 'malikabdulfarhan',
+        userSig: 'temporary-value',
+      );
+      final audio = await controller.startAudioCall('malikabdulsalam');
+      final video = await controller.startVideoCall('malikabdulsalam');
+
+      expect(login.success, isTrue);
+      expect(calls.loginCalls, 1);
+      expect(calls.sdkAppId, 20045530);
+      expect(calls.loginUserId, 'malikabdulfarhan');
+      expect(controller.isCallingAvailable, isTrue);
+      expect(audio.success, isTrue);
+      expect(video.success, isTrue);
+      expect(calls.startCalls, 2);
+      expect(calls.recipientUserId, 'malikabdulsalam');
+      expect(calls.mediaType, ChatCallMediaType.video);
+
+      await controller.logoutTencent();
+      expect(calls.logoutCalls, 1);
+      expect(tencent.loggedIn, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test('call initialization failure does not block text chat', () async {
+    final calls = FakeChatCallService(
+      loginResult: const ChatCallResult(
+        success: false,
+        errorCode: -1001,
+        message: 'Call trial is inactive.',
+      ),
+    );
+    final controller = ChatController(
+      configuration: const ChatConfiguration(sdkAppId: 1),
+      localService: FakeChatService(providerType: ChatProviderType.localDemo),
+      tencentService: FakeChatService(
+        providerType: ChatProviderType.tencentCloud,
+      ),
+      callService: calls,
+    );
+    await controller.initialize();
+
+    final login = await controller.loginTencent(
+      userId: 'user_a',
+      userSig: 'temporary-value',
+    );
+    final call = await controller.startAudioCall('user_b');
+
+    expect(login.success, isTrue);
+    expect(controller.isTencentLoggedIn, isTrue);
+    expect(controller.isCallingAvailable, isFalse);
+    expect(call.success, isFalse);
+    expect(call.message, 'Call trial is inactive.');
+    controller.dispose();
+  });
 }

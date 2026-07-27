@@ -65,6 +65,7 @@ class ChatHomeScreen extends StatelessWidget {
                 const SizedBox(height: 8),
                 ChatConfigurationCard(
                   sdkAppIdConfigured: controller.isTencentConfigured,
+                  secureAuthConfigured: controller.isAutomaticAuthAvailable,
                   onOpenLogin: () => Navigator.push(
                     context,
                     MaterialPageRoute<void>(

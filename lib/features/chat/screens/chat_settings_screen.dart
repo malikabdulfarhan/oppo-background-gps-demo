@@ -24,6 +24,11 @@ class ChatSettingsScreen extends StatelessWidget {
             'Tencent initialization',
             controller.sdkInitializationState.label,
           ),
+          _row('Secure authentication', controller.automaticAuthState.label),
+          _row(
+            'Saved automatic login',
+            controller.hasSavedChatSession ? 'Yes' : 'No',
+          ),
           _row('Login status', controller.authenticationState.label),
           _row('Logged-in UserID', controller.loggedInUserId ?? 'None'),
           _row('Network state', controller.networkState.label),
@@ -38,17 +43,18 @@ class ChatSettingsScreen extends StatelessWidget {
               ),
             ),
             icon: const Icon(Icons.cloud_outlined),
-            label: const Text('Open Tencent login'),
+            label: const Text('Open Chat sign-in'),
           ),
           OutlinedButton(
             onPressed: controller.switchToLocalDemo,
             child: const Text('Switch to Local Demo'),
           ),
           OutlinedButton(
-            onPressed: controller.isTencentLoggedIn
+            onPressed:
+                controller.isTencentLoggedIn || controller.hasSavedChatSession
                 ? controller.logoutTencent
                 : null,
-            child: const Text('Logout Tencent'),
+            child: const Text('Sign out and forget login'),
           ),
           TextButton(
             onPressed: () async {

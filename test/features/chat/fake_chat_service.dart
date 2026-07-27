@@ -32,6 +32,8 @@ class FakeChatService implements ChatService, LocalDemoChatOperations {
   int resetCalls = 0;
   int sendCalls = 0;
   bool loggedIn = false;
+  String? loginUserId;
+  String? loginUserSig;
 
   @override
   bool get advancedListenerRegistered => initializeCalls == 1;
@@ -53,6 +55,8 @@ class FakeChatService implements ChatService, LocalDemoChatOperations {
     required String userId,
     required String userSig,
   }) async {
+    loginUserId = userId;
+    loginUserSig = userSig;
     loggedIn = loginResult.success;
     return loginResult;
   }

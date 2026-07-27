@@ -99,3 +99,7 @@ abstract interface class LocalDemoChatOperations {
 
   Future<void> resetLocalData();
 }
+
+abstract interface class ExternallyAuthenticatedChatService {
+  void resetAfterExternalLogout();
+}

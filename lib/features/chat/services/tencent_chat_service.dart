@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:tencent_cloud_chat_sdk/enum/V2TimAdvancedMsgListener.dart';
 import 'package:tencent_cloud_chat_sdk/enum/V2TimConversationListener.dart';
 import 'package:tencent_cloud_chat_sdk/enum/V2TimSDKListener.dart';
+import 'package:tencent_cloud_chat_sdk/enum/login_status.dart';
 import 'package:tencent_cloud_chat_sdk/enum/message_status.dart';
 import 'package:tencent_cloud_chat_sdk/models/v2_tim_conversation.dart';
 import 'package:tencent_cloud_chat_sdk/models/v2_tim_message.dart';
@@ -15,7 +16,8 @@ import '../models/chat_message.dart';
 import '../models/chat_user.dart';
 import 'chat_service.dart';
 
-class TencentChatService implements ChatService {
+class TencentChatService
+    implements ChatService, ExternallyAuthenticatedChatService {
   TencentChatService({required this.sdkAppId});
 
   final int sdkAppId;
@@ -149,8 +151,20 @@ class TencentChatService implements ChatService {
     required String userSig,
   }) async {
     await initialize();
+    final cleanUserId = userId.trim();
+    final status = await _manager.getLoginStatus();
+    if (status.code == 0 && status.data == LoginStatus.V2TIM_STATUS_LOGINED) {
+      final currentUser = await _manager.getLoginUser();
+      if (currentUser.code == 0 && currentUser.data == cleanUserId) {
+        return const ChatLoginResult(success: true);
+      }
+      return const ChatLoginResult(
+        success: false,
+        message: 'A different Tencent user is already signed in.',
+      );
+    }
     final result = await _manager.login(
-      userID: userId.trim(),
+      userID: cleanUserId,
       userSig: userSig.trim(),
     );
     if (result.code == 0) return const ChatLoginResult(success: true);
@@ -168,6 +182,13 @@ class TencentChatService implements ChatService {
     if (result.code != 0) {
       throw ChatServiceException(_safeSummary(result.desc), code: result.code);
     }
+  }
+
+  @override
+  void resetAfterExternalLogout() {
+    _initialized = false;
+    _initializing = false;
+    _listenersRegistered = false;
   }
 
   @override

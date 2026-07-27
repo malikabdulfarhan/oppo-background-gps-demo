@@ -9,7 +9,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_secure_storage: ^10.3.1
+  http: ^1.6.0
   path_provider: ^2.1.6
+  tencent_calls_uikit: ^5.0.0
   tencent_cloud_chat_sdk: ^9.0.7652+1
 
 dev_dependencies:

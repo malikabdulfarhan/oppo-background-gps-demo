@@ -32,6 +32,10 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+backend/chat_auth_worker/.dev.vars
+backend/chat_auth_worker/node_modules/
+backend/chat_auth_worker/.wrangler/
+.tools/
 
 # Symbolication related
 app.*.symbols
@@ -43,3 +47,4 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/

@@ -6,7 +6,11 @@ import '../models/chat_configuration.dart';
 import '../models/chat_connection_state.dart';
 import '../models/chat_conversation.dart';
 import '../models/chat_message.dart';
+import '../models/chat_automatic_auth_state.dart';
 import '../models/chat_user.dart';
+import '../services/chat_auth_api.dart';
+import '../services/chat_auth_coordinator.dart';
+import '../services/chat_call_service.dart';
 import '../services/chat_service.dart';
 import '../services/chat_service_factory.dart';
 
@@ -16,16 +20,24 @@ class ChatController extends ChangeNotifier {
     ChatServiceFactory factory = const ChatServiceFactory(),
     ChatService? localService,
     ChatService? tencentService,
+    ChatAuthCoordinator? authCoordinator,
+    ChatCallService? callService,
   }) : configuration = configuration,
        _localService = localService ?? factory.createLocalDemo(),
-       _tencentService =
-           tencentService ?? factory.createTencent(configuration) {
+       _tencentService = tencentService ?? factory.createTencent(configuration),
+       _authCoordinator = authCoordinator,
+       _callService = callService ?? const DisabledChatCallService(),
+       _automaticAuthState = authCoordinator == null
+           ? ChatAutomaticAuthState.unavailable
+           : ChatAutomaticAuthState.idle {
     _activeService = _localService;
   }
 
   final ChatConfiguration configuration;
   final ChatService _localService;
   final ChatService _tencentService;
+  final ChatAuthCoordinator? _authCoordinator;
+  final ChatCallService _callService;
   late ChatService _activeService;
   final StreamController<ChatEvent> _events =
       StreamController<ChatEvent>.broadcast();
@@ -39,13 +51,18 @@ class ChatController extends ChangeNotifier {
   ChatAuthenticationState _authenticationState =
       ChatAuthenticationState.loggedOut;
   ChatUserSigState _userSigState = ChatUserSigState.notAvailable;
+  ChatAutomaticAuthState _automaticAuthState;
   bool _initialized = false;
   bool _loading = false;
   bool _loginSubmitting = false;
   bool _disposed = false;
+  bool _hasSavedChatSession = false;
+  bool _automaticRecoveryRunning = false;
   int _totalUnreadCount = 0;
   int? _lastErrorCode;
   String? _lastErrorSummary;
+  String? _automaticAuthMessage;
+  String? _callErrorMessage;
   String? _loggedInUserId;
   DateTime? _lastIncomingMessageTimestamp;
 
@@ -55,18 +72,25 @@ class ChatController extends ChangeNotifier {
   ChatNetworkState get networkState => _networkState;
   ChatAuthenticationState get authenticationState => _authenticationState;
   ChatUserSigState get userSigState => _userSigState;
+  ChatAutomaticAuthState get automaticAuthState => _automaticAuthState;
   bool get isInitialized => _initialized;
   bool get isLoading => _loading;
   bool get isLoginSubmitting => _loginSubmitting;
   bool get isTencentConfigured => configuration.isTencentConfigured;
+  bool get isAutomaticAuthAvailable => _authCoordinator != null;
+  bool get hasSavedChatSession => _hasSavedChatSession;
   bool get isTencentLoggedIn =>
       _authenticationState == ChatAuthenticationState.loggedIn;
+  bool get isCallingSupported => _callService.isSupported;
+  bool get isCallingAvailable => isTencentLoggedIn && _callService.isLoggedIn;
   bool get advancedListenerRegistered =>
       _tencentService.advancedListenerRegistered;
   int get totalUnreadCount => _totalUnreadCount;
   int get conversationCount => _conversations.length;
   int? get lastErrorCode => _lastErrorCode;
   String? get lastErrorSummary => _lastErrorSummary;
+  String? get automaticAuthMessage => _automaticAuthMessage;
+  String? get callErrorMessage => _callErrorMessage;
   String? get loggedInUserId => _loggedInUserId;
   String? get sdkVersion => _tencentService.sdkVersion;
   DateTime? get lastIncomingMessageTimestamp => _lastIncomingMessageTimestamp;
@@ -77,6 +101,135 @@ class ChatController extends ChangeNotifier {
     if (_initialized || _disposed) return;
     _initialized = true;
     await _activateService(_localService);
+    if (isTencentConfigured && isAutomaticAuthAvailable) {
+      await restoreAutomaticLogin();
+    }
+  }
+
+  Future<bool> restoreAutomaticLogin() async {
+    final coordinator = _authCoordinator;
+    if (coordinator == null ||
+        !isTencentConfigured ||
+        _disposed ||
+        _automaticAuthState == ChatAutomaticAuthState.restoring ||
+        _automaticAuthState == ChatAutomaticAuthState.signingIn) {
+      return false;
+    }
+    _automaticAuthState = ChatAutomaticAuthState.restoring;
+    _automaticAuthMessage = null;
+    _notify();
+    try {
+      _hasSavedChatSession = await coordinator.hasSavedSession();
+      if (!_hasSavedChatSession) {
+        _automaticAuthState = ChatAutomaticAuthState.idle;
+        _notify();
+        return false;
+      }
+      final session = await coordinator.restore();
+      if (session == null) {
+        _hasSavedChatSession = false;
+        _automaticAuthState = ChatAutomaticAuthState.idle;
+        _notify();
+        return false;
+      }
+      final result = await loginTencent(
+        userId: session.userId,
+        userSig: session.userSig,
+      );
+      if (result.success) {
+        _hasSavedChatSession = true;
+        _automaticAuthState = ChatAutomaticAuthState.authenticated;
+        _automaticAuthMessage = null;
+        _notify();
+        return true;
+      }
+      _automaticAuthState = ChatAutomaticAuthState.failed;
+      _automaticAuthMessage =
+          result.message ?? 'Tencent Chat could not restore your login.';
+    } on ChatAuthException catch (error) {
+      _hasSavedChatSession = !error.sessionExpired;
+      _automaticAuthState = error.sessionExpired
+          ? ChatAutomaticAuthState.sessionExpired
+          : ChatAutomaticAuthState.failed;
+      _automaticAuthMessage = error.message;
+    } on Object {
+      _automaticAuthState = ChatAutomaticAuthState.failed;
+      _automaticAuthMessage =
+          'Automatic Chat sign-in is temporarily unavailable.';
+    }
+    _notify();
+    return false;
+  }
+
+  Future<ChatLoginResult> loginWithBackend({
+    required String userId,
+    required String pin,
+  }) async {
+    final coordinator = _authCoordinator;
+    final cleanUserId = userId.trim();
+    if (coordinator == null) {
+      return const ChatLoginResult(
+        success: false,
+        message: 'Secure Chat authentication is not configured.',
+      );
+    }
+    if (!isTencentConfigured) {
+      return const ChatLoginResult(
+        success: false,
+        message: 'Tencent SDKAppID is not configured.',
+      );
+    }
+    if (cleanUserId.isEmpty || pin.isEmpty) {
+      return const ChatLoginResult(
+        success: false,
+        message: 'User ID and demo PIN are required.',
+      );
+    }
+    if (_loginSubmitting ||
+        _automaticAuthState == ChatAutomaticAuthState.signingIn ||
+        _automaticAuthState == ChatAutomaticAuthState.restoring) {
+      return const ChatLoginResult(
+        success: false,
+        message: 'Chat sign-in is already running.',
+      );
+    }
+
+    _automaticAuthState = ChatAutomaticAuthState.signingIn;
+    _automaticAuthMessage = null;
+    _notify();
+    try {
+      final session = await coordinator.signIn(userId: cleanUserId, pin: pin);
+      _hasSavedChatSession = true;
+      final result = await loginTencent(
+        userId: session.userId,
+        userSig: session.userSig,
+      );
+      if (result.success) {
+        _automaticAuthState = ChatAutomaticAuthState.authenticated;
+        _automaticAuthMessage = null;
+      } else {
+        _automaticAuthState = ChatAutomaticAuthState.failed;
+        _automaticAuthMessage =
+            result.message ?? 'Tencent Chat sign-in failed.';
+      }
+      _notify();
+      return result;
+    } on ChatAuthException catch (error) {
+      _automaticAuthState = error.sessionExpired
+          ? ChatAutomaticAuthState.sessionExpired
+          : ChatAutomaticAuthState.failed;
+      _automaticAuthMessage = error.message;
+      _setError(null, error.message);
+      _notify();
+      return ChatLoginResult(success: false, message: error.message);
+    } on Object {
+      const message = 'Secure Chat sign-in is temporarily unavailable.';
+      _automaticAuthState = ChatAutomaticAuthState.failed;
+      _automaticAuthMessage = message;
+      _setError(null, message);
+      _notify();
+      return const ChatLoginResult(success: false, message: message);
+    }
   }
 
   Future<void> _activateService(
@@ -177,6 +330,7 @@ class ChatController extends ChangeNotifier {
     _authenticationState = ChatAuthenticationState.loggingIn;
     _clearError();
     _notify();
+    var callSessionStarted = false;
     try {
       final initialized =
           _sdkInitializationState == ChatSdkInitializationState.initialized ||
@@ -188,11 +342,21 @@ class ChatController extends ChangeNotifier {
           message: _lastErrorSummary,
         );
       }
+      if (_callService.isSupported) {
+        final callLogin = await _callService.login(
+          sdkAppId: configuration.sdkAppId,
+          userId: cleanUserId,
+          userSig: cleanUserSig,
+        );
+        callSessionStarted = callLogin.success;
+        _callErrorMessage = callLogin.success ? null : callLogin.message;
+      }
       final result = await _tencentService.login(
         userId: cleanUserId,
         userSig: cleanUserSig,
       );
       if (!result.success) {
+        if (callSessionStarted) await _detachCallSession();
         _authenticationState = result.isExpiredCredential
             ? ChatAuthenticationState.authenticationExpired
             : ChatAuthenticationState.loggedOut;
@@ -213,6 +377,7 @@ class ChatController extends ChangeNotifier {
       await _activateService(_tencentService, initializeService: false);
       return const ChatLoginResult(success: true);
     } on ChatServiceException catch (error) {
+      if (callSessionStarted) await _detachCallSession();
       _authenticationState = ChatAuthenticationState.loggedOut;
       _userSigState = ChatUserSigState.notAvailable;
       _setError(error.code, error.summary);
@@ -222,6 +387,7 @@ class ChatController extends ChangeNotifier {
         message: error.summary,
       );
     } on Object {
+      if (callSessionStarted) await _detachCallSession();
       _authenticationState = ChatAuthenticationState.loggedOut;
       _userSigState = ChatUserSigState.notAvailable;
       _setError(null, 'Tencent login failed.');
@@ -242,13 +408,34 @@ class ChatController extends ChangeNotifier {
 
   Future<void> logoutTencent() async {
     try {
-      await _tencentService.logout();
+      await _authCoordinator?.signOut();
+    } on Object {
+      try {
+        await _authCoordinator?.clearLocalSession();
+      } on Object {
+        // Logout still clears all in-memory credentials below.
+      }
+    }
+    _hasSavedChatSession = false;
+    _automaticAuthState = isAutomaticAuthAvailable
+        ? ChatAutomaticAuthState.idle
+        : ChatAutomaticAuthState.unavailable;
+    _automaticAuthMessage = null;
+    try {
+      if (_callService.isLoggedIn) {
+        await _detachCallSession();
+      } else {
+        await _tencentService.logout();
+      }
     } on ChatServiceException catch (error) {
       _setError(error.code, error.summary);
+    } on Object {
+      _setError(null, 'Tencent logout did not complete cleanly.');
     }
     _authenticationState = ChatAuthenticationState.loggedOut;
     _userSigState = ChatUserSigState.notAvailable;
     _loggedInUserId = null;
+    _callErrorMessage = null;
     await switchToLocalDemo();
     _notify();
   }
@@ -257,8 +444,28 @@ class ChatController extends ChangeNotifier {
     _authenticationState = ChatAuthenticationState.loggedOut;
     _userSigState = ChatUserSigState.notAvailable;
     _loggedInUserId = null;
+    _automaticAuthMessage = null;
     _clearError();
     _notify();
+  }
+
+  Future<void> clearSavedAuthentication() async {
+    if (isTencentLoggedIn || _providerType == ChatProviderType.tencentCloud) {
+      await logoutTencent();
+      return;
+    }
+    try {
+      await _authCoordinator?.clearLocalSession();
+    } on Object {
+      _automaticAuthMessage = 'Unable to clear the saved Chat session.';
+      _notify();
+      return;
+    }
+    _hasSavedChatSession = false;
+    _automaticAuthState = isAutomaticAuthAvailable
+        ? ChatAutomaticAuthState.idle
+        : ChatAutomaticAuthState.unavailable;
+    clearCredentialsState();
   }
 
   Future<List<ChatMessage>> getMessages({
@@ -285,6 +492,39 @@ class ChatController extends ChangeNotifier {
       _notify();
       rethrow;
     }
+  }
+
+  Future<ChatCallResult> startAudioCall(String recipientUserId) =>
+      _startCall(recipientUserId, ChatCallMediaType.audio);
+
+  Future<ChatCallResult> startVideoCall(String recipientUserId) =>
+      _startCall(recipientUserId, ChatCallMediaType.video);
+
+  Future<ChatCallResult> _startCall(
+    String recipientUserId,
+    ChatCallMediaType mediaType,
+  ) async {
+    if (!isTencentLoggedIn) {
+      return const ChatCallResult(
+        success: false,
+        message: 'Sign in to Tencent Chat before starting a call.',
+      );
+    }
+    if (!_callService.isLoggedIn) {
+      return ChatCallResult(
+        success: false,
+        message:
+            _callErrorMessage ??
+            'Audio/video calling is not ready. Sign in again.',
+      );
+    }
+    final result = await _callService.startCall(
+      recipientUserId: recipientUserId,
+      mediaType: mediaType,
+    );
+    _callErrorMessage = result.success ? null : result.message;
+    _notify();
+    return result;
   }
 
   Future<void> markConversationAsRead(String conversationId) async {
@@ -363,11 +603,24 @@ class ChatController extends ChangeNotifier {
       case ChatEventType.authenticationExpired:
         _authenticationState = ChatAuthenticationState.authenticationExpired;
         _userSigState = ChatUserSigState.expired;
-        _setError(null, 'Tencent login expired. Request a new UserSig.');
+        if (isAutomaticAuthAvailable && _hasSavedChatSession) {
+          _setError(null, 'Tencent login expired. Refreshing securely.');
+          unawaited(_recoverAutomaticAuthentication());
+        } else {
+          _setError(null, 'Tencent login expired. Sign in again.');
+        }
       case ChatEventType.kickedOffline:
         _authenticationState = ChatAuthenticationState.kickedOffline;
         _userSigState = ChatUserSigState.notAvailable;
         _loggedInUserId = null;
+        _hasSavedChatSession = false;
+        _automaticAuthState = isAutomaticAuthAvailable
+            ? ChatAutomaticAuthState.sessionExpired
+            : ChatAutomaticAuthState.unavailable;
+        _automaticAuthMessage =
+            'This user signed in on another device. Sign in again to continue.';
+        unawaited(_detachCallSession());
+        unawaited(_clearSavedSessionAfterKick());
         _setError(
           null,
           'This Tencent user was signed in elsewhere and was kicked offline.',
@@ -390,6 +643,39 @@ class ChatController extends ChangeNotifier {
     _notify();
   }
 
+  Future<void> _recoverAutomaticAuthentication() async {
+    if (_automaticRecoveryRunning || _disposed) return;
+    _automaticRecoveryRunning = true;
+    try {
+      await _detachCallSession();
+      await restoreAutomaticLogin();
+    } finally {
+      _automaticRecoveryRunning = false;
+    }
+  }
+
+  Future<void> _detachCallSession() async {
+    if (_callService.isLoggedIn) {
+      await _callService.logout();
+    }
+    final service = _tencentService;
+    if (service is ExternallyAuthenticatedChatService) {
+      (service as ExternallyAuthenticatedChatService)
+          .resetAfterExternalLogout();
+      _sdkInitializationState = ChatSdkInitializationState.notAttempted;
+    } else {
+      await service.logout();
+    }
+  }
+
+  Future<void> _clearSavedSessionAfterKick() async {
+    try {
+      await _authCoordinator?.clearLocalSession();
+    } on Object {
+      // In-memory state is still cleared to prevent a retry loop.
+    }
+  }
+
   void _setError(int? code, String summary) {
     _lastErrorCode = code;
     _lastErrorSummary = summary;
@@ -407,10 +693,26 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    unawaited(_serviceSubscription?.cancel());
-    unawaited(_localService.dispose());
-    unawaited(_tencentService.dispose());
+    unawaited(_disposeServices());
+    _authCoordinator?.dispose();
     unawaited(_events.close());
     super.dispose();
+  }
+
+  Future<void> _disposeServices() async {
+    await _serviceSubscription?.cancel();
+    final externallyAuthenticated = _callService.isLoggedIn;
+    try {
+      await _callService.dispose();
+    } on Object {
+      // Disposal is best-effort and must not surface plugin details.
+    }
+    if (externallyAuthenticated &&
+        _tencentService is ExternallyAuthenticatedChatService) {
+      (_tencentService as ExternallyAuthenticatedChatService)
+          .resetAfterExternalLogout();
+    }
+    await _localService.dispose();
+    await _tencentService.dispose();
   }
 }

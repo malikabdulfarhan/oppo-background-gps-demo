@@ -98,6 +98,14 @@ class DiagnosticsScreen extends StatelessWidget {
       ('Selected chat provider', chatController.providerType.label),
       ('Tencent login status', chatController.authenticationState.label),
       ('Tencent logged-in UserID', chatController.loggedInUserId ?? 'None'),
+      (
+        'Secure Chat authentication backend',
+        chatController.isAutomaticAuthAvailable
+            ? 'Configured'
+            : 'Not configured',
+      ),
+      ('Automatic Chat login', chatController.automaticAuthState.label),
+      ('Saved Chat session', chatController.hasSavedChatSession ? 'Yes' : 'No'),
       ('Tencent network state', chatController.networkState.label),
       ('Chat conversation count', '${chatController.conversationCount}'),
       ('Chat total unread count', '${chatController.totalUnreadCount}'),
@@ -163,9 +171,11 @@ class DiagnosticsScreen extends StatelessWidget {
                   value:
                       'Integrated — credentials required for runtime verification',
                 ),
-                const _DemoStatusRow(
+                _DemoStatusRow(
                   label: 'Tencent one-to-one cloud messaging',
-                  value: 'Pending SDKAppID and UserSig verification',
+                  value: chatController.isAutomaticAuthAvailable
+                      ? 'Secure automatic sign-in configured'
+                      : 'Pending secure backend configuration',
                 ),
                 const _DemoStatusRow(
                   label: 'Tencent OPPO offline push',
@@ -212,7 +222,8 @@ class DiagnosticsScreen extends StatelessWidget {
         const Text(
           'The report excludes the AMap key, signing certificates, and '
           'absolute app-private file paths, UserSig, message contents, '
-          'recipient lists, and SDKSecretKey.',
+          'recipient lists, authentication endpoint, refresh token, PIN, and '
+          'SDKSecretKey.',
           textAlign: TextAlign.center,
         ),
       ],
